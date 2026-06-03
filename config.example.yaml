@@ -1,0 +1,130 @@
+# Telegram API Credentials
+# Get these from https://my.telegram.org/
+telegram:
+  api_id: ""
+  api_hash: ""
+  phone_nr: ""
+  account: ""
+
+# API Provider Configuration
+# Options: "GROQ" or "OPENAI"
+api:
+  provider:
+    transcription: "GROQ"
+    rephrase: "GROQ"
+  keys:
+    openai: ""
+    groq: ""
+
+# Recovery behaviour
+recovery:
+  graceful_degradation: true
+  provider_fallback: true
+  retry_count: 3
+  # Telegram connection watchdog. If these checks fail repeatedly, the bot exits
+  # with an error so process managers like supervisor can restart it cleanly.
+  telegram_healthcheck_interval_seconds: 60
+  telegram_healthcheck_timeout_seconds: 20
+  telegram_healthcheck_max_failures: 5
+  telegram_shutdown_timeout_seconds: 30
+  # What happens after telegram_healthcheck_max_failures consecutive failures:
+  #   true  (default) -> the bot exits with code 1 so a process manager
+  #                      (supervisor/systemd/PM2) restarts it cleanly.
+  #   false           -> the bot keeps running, resets the counter and relies on
+  #                      Pyrogram's built-in auto-reconnect (no process manager
+  #                      required).
+  watchdog_hard_exit: true
+
+# Logging
+# The bot writes one file per day to logs/bot_YYYYMMDD.log.
+# Can also be set via .env: LOG_RETENTION_DAYS=10
+logging:
+  retention_days: 10
+  # Verbose logging. When false (default), transcription/rephrasing CONTENT is
+  # only written to the log as a short preview (privacy + smaller log files).
+  # Set to true to log full transcripts, prompts and rephrasing results — useful
+  # for debugging, but the logs then contain the full message content.
+  verbose: false
+
+# New-chat behaviour
+# Controls whether transcription is automatically ON in chats the bot has never
+# seen before (i.e. not yet stored in chats.json). Existing chats keep whatever
+# you configured with /ton, /toff, /tin, /tout.
+#   true  (default) -> transcribe everywhere out of the box; opt OUT per chat
+#                      with /toff.
+#   false           -> stay silent in new chats until you opt IN per chat with
+#                      /ton.
+transcription_enabled_new_chats: true
+
+# Model configurations
+models:
+  openai:
+    transcription: "whisper-1"
+    rephrase: "gpt-4o-mini"
+  groq:
+    transcription: "whisper-large-v3"
+    rephrase: "openai/gpt-oss-120b"
+
+# System prompts
+#
+# IMPORTANT: Tune these two prompts to your own needs — they have the biggest
+# impact on output quality.
+#   - "transcription" steers the speech-to-text model (spelling, punctuation,
+#     domain-specific vocabulary you use often, names, technical terms, etc.).
+#   - "rephrase" steers how the transcript is cleaned up afterwards.
+# Add your own jargon, product names or topics to the transcription prompt so the
+# model spells them correctly. Adjust the rephrase prompt to match the tone and
+# amount of editing you want.
+prompts:
+  transcription: |
+    The following is a transcription of a voice input. The transcription should match
+    the original almost perfectly; only filler words and pauses/gaps should be removed.
+    Please pay attention to spelling, capitalization and sensible punctuation, including
+    periods and commas. I also use anglicisms and technical terms, especially from the
+    technology and IT space, gadgets, smartphones, automotive, AI and Python programming,
+    as well as stocks (ASX, NASDAQ) and biotech. Output the text in its original language.
+    Return the cleaned-up text only once, without any additional explanations or
+    repetitions.
+
+  rephrase: |
+    You are an AI text optimizer. Your goal is to revise the transcription of a social
+    media voice message without changing its original tone, word choice or style. Return
+    the revised text in the original input language.
+    You will be given an existing transcription as input that you should revise.
+
+    Follow these rules strictly:
+
+    1. **Preserve originality**
+    - Keep the actual words of the original unchanged wherever possible.
+    - Do not change spelling (e.g. lowercase words, slang, emojis).
+
+    2. **Remove filler words**
+    - Remove typical filler words and redundancies such as "uh", "um", "like", "you know",
+      "basically", "actually", "so", "well", etc., unless they add meaning.
+
+    3. **Merge repeated topics**
+    - If a topic is mentioned several times in a row, merge the repetitions into a single
+      statement without adding new information.
+    - Example: "I had the meeting yesterday and then the meeting was very long." →
+      "I had a very long meeting yesterday."
+
+    4. **Lightly adjust sentence structure**
+    - You may slightly change word order to improve readability, but the original word
+      choice must be preserved.
+    - Do not introduce synonyms if the original word already fits.
+
+    5. **No content changes**
+    - Do not add new facts, opinions or interpretations.
+    - Only remove redundant words/redundancies, but leave the meaning unchanged.
+
+    6. **Short-form words and special characters**
+    - Keep all lowercase words, abbreviations, emojis and special characters exactly as
+      they appear in the original.
+
+    7. You may split distinct topics into separate paragraphs to improve readability,
+       without changing the original style.
+
+    **Workflow**
+    - You receive the raw transcription as text input.
+    - Return only the revised version, without any preface or closing remarks, in the same
+      language and style as the original.
