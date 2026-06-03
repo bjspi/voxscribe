@@ -1,0 +1,33 @@
+# Static-check config for the voice-transcriber bot (ruff + mypy).
+#
+# Install once:   pip install ruff mypy
+# Run checks:     ruff check src bot.py   &&   mypy src bot.py
+#                 (or just run  static_code_check.bat  on Windows)
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+extend-exclude = ["session", "logs", "data", "downloads", "__pycache__"]
+
+[tool.ruff.lint]
+# Bug-focused rule set: pyflakes (F) + bugbear (B) catch real bugs;
+# E/W basic correctness; I import order; UP/C4 modernizations.
+select = ["E", "F", "W", "I", "B", "UP", "C4"]
+ignore = [
+    "E501",   # line length is style, not a bug (line-length above is a soft cap)
+    "B008",   # function call in argument defaults (we use field(default_factory=...))
+]
+
+[tool.ruff.lint.per-file-ignores]
+"bot.py" = ["E402"]  # lazy imports inside hooks are intentional
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true      # pyrogram/groq have no stubs
+check_untyped_defs = true          # type-check function bodies too (more bug coverage)
+warn_redundant_casts = true
+warn_unused_configs = true
+no_implicit_optional = true
+disallow_untyped_defs = false
+explicit_package_bases = true
+exclude = "(^|/)(session|logs|data|downloads)/"

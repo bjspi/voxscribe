@@ -1,4 +1,4 @@
-# 🎙️ Telegram Voice Transcription Bot
+# 🎙️ voxscribe — Telegram Voice Transcription Bot
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -26,9 +26,24 @@ A self-hosted Telegram **userbot** that transcribes voice messages in real time 
 
 ---
 
+## 📸 Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><img src="screenshots/outgoing-voice-chunks.jpg" alt="A long voice note transcribed and split into Part 1/2 and Part 2/2" width="100%"></td>
+    <td width="50%"><img src="screenshots/incoming-voice.jpg" alt="A voice note transcribed inline as a quoted reply" width="100%"></td>
+  </tr>
+  <tr>
+    <td align="center"><em>Long voice notes are split into parts (1/2, 2/2)</em></td>
+    <td align="center"><em>Each transcript is posted as a reply with sender &amp; duration</em></td>
+  </tr>
+</table>
+
+---
+
 ## 🚀 How It Works
 
-1. The bot watches your account for voice messages in private chats.
+1. The bot watches your account for voice messages in all your chats (DMs and groups).
 2. A voice arrives → it downloads and transcribes the audio.
 3. *(Optional)* It rephrases the transcription for readability.
 4. The text is posted as a reply to the original voice message.
@@ -45,6 +60,12 @@ The bot reacts to voice messages in **every** chat type — direct messages, gro
 supergroups. Each chat is configured **independently** (settings are keyed by chat ID), so
 you decide per conversation what happens.
 
+> ⚡ **Important — it's ON everywhere by default.** Transcription is automatically active in
+> **every** chat the bot hasn't seen before (DMs *and* groups). There is no per-chat opt-in:
+> if you don't want it in a particular group, you have to **turn it off there** with `/toff`.
+> You can flip this default with **`transcription_enabled_new_chats: false`** in `config.yaml`
+> (see the **Configuration** section) — then new chats stay silent until you `/ton` them.
+
 | | **1-on-1 (DM)** | **Group / Supergroup** |
 |---|---|---|
 | **Incoming** voice | your partner's voice notes | voice notes from *any* member |
@@ -53,14 +74,19 @@ you decide per conversation what happens.
 | **Who can run commands** | only you (the account owner) | only you — never other members |
 | **Where the reply appears** | private between you two | **visible to the whole group** |
 
-**How to set it up in a specific chat** — just send the command *in that chat*:
+**How to adjust a specific chat** — send the command **inside that exact chat**; it only
+affects that one conversation (the setting is stored under that chat's ID). Since
+transcription is already ON everywhere, this is mostly about turning things **off**:
 
 ```
-/ton        → enable transcription for THIS chat
-/tin        → toggle transcription of others' incoming voices
-/tout       → toggle transcription of your own outgoing voices
-/toff       → silence the bot in THIS chat entirely
+/toff       → master switch OFF for THIS chat (silences it entirely, e.g. a noisy group)
+/ton        → master switch ON for THIS chat
+/tin        → toggle only the incoming direction (others' voices) in THIS chat
+/tout       → toggle only the outgoing direction (your own voices) in THIS chat
 ```
+
+`/toff` overrides the direction toggles: while a chat is off, `/tin` / `/tout` have no effect
+until you `/ton` it again.
 
 > ⚠️ **Group privacy:** Because this is a **userbot**, every transcription is posted **as you**
 > into the chat — in a group that means **all members see it**. If you only want transcriptions
@@ -132,6 +158,21 @@ models:
     rephrase: "gpt-4o-mini"
 ```
 
+### ✍️ Tune your prompts (do this first!)
+
+The two prompts under `prompts:` in `config.yaml` have the **biggest impact on output
+quality** — take a minute to adapt them before relying on the bot:
+
+- **`prompts.transcription`** steers the speech-to-text model. Add your own **jargon, names,
+  product/brand names and recurring topics** so they get spelled correctly, and set the
+  expected punctuation/capitalization style.
+- **`prompts.rephrase`** steers how the transcript is cleaned up afterwards — control the
+  tone, how aggressively filler words are removed, and how much restructuring is allowed.
+
+Both prompts ship with sensible English defaults in `config.example.yaml`; treat them as a
+starting point and make them yours. Per-chat overrides are also possible via `/setprompt`,
+`/setprompt_in` and `/setprompt_out`.
+
 ### 🔀 Mixed Mode
 
 Use a different provider for each task — fast transcription, high-quality rephrasing:
@@ -157,6 +198,29 @@ api:
 | **Telegram API** | [my.telegram.org](https://my.telegram.org/) → *API development tools* | Free. Copy `api_id` + `api_hash`. |
 | **Groq** | [console.groq.com](https://console.groq.com/) | Free tier, no credit card. |
 | **OpenAI** | [platform.openai.com](https://platform.openai.com/) | Pay-as-you-go. |
+
+### 🎚️ Behaviour & privacy settings
+
+A few optional toggles in `config.yaml` control defaults and logging:
+
+```yaml
+# Transcribe by default in chats the bot has never seen before?
+#   true  (default) → ON everywhere, opt OUT per chat with /toff
+#   false           → silent in new chats until you opt IN with /ton
+transcription_enabled_new_chats: true
+
+logging:
+  retention_days: 10
+  # Log full message content (transcripts, prompts, results)?
+  #   false (default) → only a short, redacted preview is logged (privacy-friendly)
+  #   true            → full content in the logs (useful for debugging)
+  verbose: false
+```
+
+| Setting | Default | Effect |
+|---|---|---|
+| `transcription_enabled_new_chats` | `true` | Whether a brand-new chat (not yet in `chats.json`) transcribes automatically. Existing chats keep their own saved setting. |
+| `logging.verbose` | `false` | When off, transcription/rephrasing content is logged only as a ~200-char preview. Turn on to log full content while debugging. |
 
 ---
 
@@ -197,6 +261,21 @@ them invisible to your partner.
 | `/setprompt_in` | Set a custom rephrasing prompt for incoming messages |
 | `/setprompt_out` | Set a custom rephrasing prompt for outgoing messages |
 
+### 🧩 The naming logic (so you never need the cheat sheet)
+
+The commands are built from small, memorable building blocks:
+
+| Block | Means | Mnemonic |
+|---|---|---|
+| `t…` | **t**ranscription | `ton` `toff` `tin` `tout` |
+| `del…` | **del**ete the voice note | `delin` `delout` |
+| `…in` / `…out` | direction — **in**coming vs **out**going | `tin` / `tout`, `delin` / `delout` |
+| `on` / `off` | global on/off for the chat | `ton` / `toff` |
+| `…v` | the **v**oice-bot namespace (avoids clashing with `/help` etc.) | `helpv` `statusv` |
+
+So `tin` = **t**ranscribe **in**coming (toggle), `delout` = **del**ete **out**going, `ton` =
+**t**ranscription **on**. Once it clicks, you'll never open `/helpv` again.
+
 ---
 
 ## ⚡ Why Groq?
@@ -214,6 +293,16 @@ them invisible to your partner.
 A background **connection watchdog** pings Telegram on an interval. After repeated failures it raises a `ConnectionHealthError` and exits with a non-zero code, so a process manager
 (**supervisor / systemd / PM2**) can restart the bot cleanly — no infinite reconnect loops.
 
+### 🔁 Hard-exit vs. keep-alive
+
+Whether the bot actually exits on connection loss is controlled by
+**`recovery.watchdog_hard_exit`** in `config.yaml`:
+
+| Value | Behaviour | Use when |
+|---|---|---|
+| `true` *(default)* | After `telegram_healthcheck_max_failures` failed checks the bot **exits with code 1** so your process manager restarts it. | You run it under supervisor / systemd / PM2. |
+| `false` | The bot **keeps running**, resets the counter and relies on Pyrogram's built-in **auto-reconnect**. | You run `python bot.py` directly, without a process manager. |
+
 <details>
 <summary>Example supervisor config</summary>
 
@@ -229,18 +318,19 @@ stdout_logfile=/var/log/voice_transcription.out.log
 ```
 </details>
 
-Tune the watchdog in `config.yaml` under `recovery:` (interval, timeout, max failures, shutdown timeout).
+Tune the watchdog in `config.yaml` under `recovery:` (interval, timeout, max failures, shutdown timeout, hard-exit).
 
 ---
 
 ## 🗂️ Project Structure
 
 ```
-voice_transcriber/
+voxscribe/
 ├── bot.py                  # Entry point — python bot.py
 ├── requirements.txt
 ├── config.example.yaml     # template (committed)
 ├── config.yaml             # your secrets (gitignored)
+├── chats.json              # per-chat settings (gitignored, auto-created)
 ├── src/
 │   ├── handlers.py         # command + voice handlers
 │   ├── transcription.py    # transcription & rephrasing logic
@@ -249,6 +339,40 @@ voice_transcriber/
 ├── session/                # Telegram session files (gitignored)
 └── logs/                   # daily rotating logs (gitignored)
 ```
+
+---
+
+## 🗃️ Per-chat settings (`chats.json`)
+
+Every chat the bot interacts with gets its own entry in `chats.json`, keyed by the numeric
+**Telegram chat ID**. The file is created and updated automatically whenever you run a command
+or a voice is transcribed — you normally never edit it by hand. It is **gitignored** (it maps
+your private chats) and written atomically, with a `.json.backup` kept alongside it.
+
+```jsonc
+{
+    "11122233": {                  // chat ID (a person or a group)
+        "chatname": "ALICE",       // cached display name, just for readability
+        "transcription": 1,        // master switch for this chat   (/ton · /toff)
+        "transcription_in": 1,     // transcribe incoming voices     (/tin)
+        "transcription_out": 1,    // transcribe your own voices     (/tout)
+        "rephrasing": 0,           // AI rephrasing on/off           (/rephrase)
+        "delete_incoming_voice": 0,// delete incoming after text     (/delin)
+        "delete_outgoing_voice": 0,// delete outgoing after text     (/delout)
+        "rephrase_prompt": "",     // legacy/global custom prompt
+        "rephrase_prompt_in": "",  // custom prompt, incoming         (/setprompt_in)
+        "rephrase_prompt_out": ""  // custom prompt, outgoing         (/setprompt_out)
+    },
+    "44455566": {                  // partial entries are fine — missing
+        "transcription": 1         // keys fall back to the defaults
+    }
+}
+```
+
+- Values are `1` (on) / `0` (off); prompt fields are strings (empty = use the global prompt).
+- **Missing keys fall back to defaults**, so a minimal `{ "transcription": 1 }` entry is valid.
+- A chat with **no entry at all** uses `transcription_enabled_new_chats` to decide whether it
+  starts ON or OFF (see the **Configuration** section).
 
 ---
 
@@ -262,16 +386,6 @@ voice_transcriber/
 
 **Logs:** one file per day in `logs/bot_YYYYMMDD.log`. Retention is configurable via
 `logging.retention_days` in `config.yaml` (default: 10 days).
-
----
-
-## 🔐 Security
-
-- Credentials live only in `config.yaml` — which is `.gitignore`d
-- Session files are `.gitignore`d to prevent account hijacking
-- The bot runs locally under your account; transcription is sent only to your chosen AI provider
-
-> ⚠️ **Never commit `config.yaml` or `session/`.** Run `git status` before your first push.
 
 ---
 
