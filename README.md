@@ -418,3 +418,17 @@ Released under the **MIT License** — see [LICENSE](LICENSE).
 This is a **userbot** that automates actions on your personal Telegram account. Use it
 responsibly and in line with [Telegram's Terms of Service](https://telegram.org/tos). The
 authors are not responsible for misuse or account restrictions.
+
+## Netzwerk-Ausfall
+
+Der Host haengt an einem privaten Anschluss; ein WAN-Ausfall ist der Normalfall.
+Verbindliches Schema fuer alle Bots dieses Hosts (siehe `_template_/CLAUDE.md`):
+
+- Der Verbindungsaufbau gibt nie nach N Versuchen auf; Pyrogram reconnected von
+  sich aus weiter.
+- Der Watchdog gibt erst nach einer **Dauer** auf
+  (`telegram_healthcheck_max_unhealthy_seconds`, 900s), nicht nach einem reinen
+  Fehlerzaehler: ein Zaehler restartet den Prozess alle paar Minuten durch einen
+  stundenlangen Ausfall hindurch und gewinnt dabei nichts.
+- Aufgeben heisst Hard-Exit fuer den Supervisor, nicht stiller Weiterlauf.
+- Transiente Fehler gedrosselt loggen, aber nie unsichtbar machen.
