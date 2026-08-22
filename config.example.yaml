@@ -26,6 +26,10 @@ recovery:
   telegram_healthcheck_interval_seconds: 60
   telegram_healthcheck_timeout_seconds: 20
   telegram_healthcheck_max_failures: 5
+  # The watchdog only gives up when BOTH the failure count and this duration are
+  # exceeded. A pure count restarts the process every few minutes for as long as
+  # a WAN outage lasts, which buys nothing - Pyrogram keeps reconnecting anyway.
+  telegram_healthcheck_max_unhealthy_seconds: 900
   telegram_shutdown_timeout_seconds: 30
   # What happens after telegram_healthcheck_max_failures consecutive failures:
   #   true  (default) -> the bot exits with code 1 so a process manager

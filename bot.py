@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -96,6 +97,13 @@ PHONE_NR = _get_config_string(["telegram", "phone_nr"])
 HEALTHCHECK_INTERVAL_SECONDS = _get_config_int(["recovery", "telegram_healthcheck_interval_seconds"], default=60)
 HEALTHCHECK_TIMEOUT_SECONDS = _get_config_int(["recovery", "telegram_healthcheck_timeout_seconds"], default=20)
 HEALTHCHECK_MAX_FAILURES = _get_config_int(["recovery", "telegram_healthcheck_max_failures"], default=5)
+# How long the connection may stay unhealthy before the watchdog gives up. A
+# pure failure count restarts the process every few minutes for as long as a WAN
+# outage lasts, which buys nothing: Pyrogram keeps retrying the connection on
+# its own. The other bots on this host use the same duration-based grace.
+HEALTHCHECK_MAX_UNHEALTHY_SECONDS = _get_config_int(
+    ["recovery", "telegram_healthcheck_max_unhealthy_seconds"], default=900
+)
 SHUTDOWN_TIMEOUT_SECONDS = _get_config_int(["recovery", "telegram_shutdown_timeout_seconds"], default=30)
 # When the watchdog gives up on the Telegram connection, should the bot hard-exit
 # (so a process manager restarts it) or keep running and rely on auto-reconnect?
@@ -278,6 +286,7 @@ async def connection_watchdog(client: Client) -> None:
             unless ``WATCHDOG_HARD_EXIT`` is disabled.
     """
     failures = 0
+    unhealthy_since: float | None = None
 
     while True:
         await asyncio.sleep(HEALTHCHECK_INTERVAL_SECONDS)
@@ -285,33 +294,50 @@ async def connection_watchdog(client: Client) -> None:
         try:
             await asyncio.wait_for(client.invoke(raw.functions.updates.GetState()), timeout=HEALTHCHECK_TIMEOUT_SECONDS)
             if failures:
-                logger.info("Telegram healthcheck recovered after %s failed checks", failures)
+                logger.info(
+                    "Telegram healthcheck recovered after %s failed checks (%.0fs unhealthy)",
+                    failures,
+                    time.monotonic() - (unhealthy_since or time.monotonic()),
+                )
             failures = 0
+            unhealthy_since = None
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             failures += 1
-            max_failures_reached = failures >= HEALTHCHECK_MAX_FAILURES
+            if unhealthy_since is None:
+                unhealthy_since = time.monotonic()
+            unhealthy_for = time.monotonic() - unhealthy_since
+            # Both must be true: enough failures to rule out a single blip, and
+            # long enough to rule out a short outage Pyrogram will ride out by
+            # itself. Restarting every five minutes through a two-hour WAN
+            # outage only churns the process.
+            give_up = failures >= HEALTHCHECK_MAX_FAILURES and unhealthy_for >= HEALTHCHECK_MAX_UNHEALTHY_SECONDS
             logger.warning(
-                "Telegram healthcheck failed %s/%s: %s",
+                "Telegram healthcheck failed %s/%s (%.0fs/%ss unhealthy): %s",
                 failures,
                 HEALTHCHECK_MAX_FAILURES,
+                unhealthy_for,
+                HEALTHCHECK_MAX_UNHEALTHY_SECONDS,
                 exc,
-                exc_info=max_failures_reached,
+                exc_info=give_up,
             )
 
-            if max_failures_reached:
+            if give_up:
                 if WATCHDOG_HARD_EXIT:
                     raise ConnectionHealthError(
-                        f"Telegram connection did not recover after {failures} healthcheck failures"
+                        f"Telegram connection did not recover within {unhealthy_for:.0f}s "
+                        f"({failures} healthcheck failures)"
                     ) from exc
                 logger.error(
-                    "Telegram connection did not recover after %s healthcheck failures; "
+                    "Telegram connection did not recover within %.0fs (%s healthcheck failures); "
                     "watchdog hard-exit is disabled, continuing to monitor and relying on "
                     "Pyrogram auto-reconnect",
+                    unhealthy_for,
                     failures,
                 )
                 failures = 0
+                unhealthy_since = None
 
 
 async def main() -> None:
