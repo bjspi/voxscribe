@@ -290,8 +290,20 @@ So `tin` = **t**ranscribe **in**coming (toggle), `delout` = **del**ete **out**go
 
 ## 🩺 Reliability
 
-A background **connection watchdog** pings Telegram on an interval. After repeated failures it raises a `ConnectionHealthError` and exits with a non-zero code, so a process manager
-(**supervisor / systemd / PM2**) can restart the bot cleanly — no infinite reconnect loops.
+A background **connection watchdog** pings Telegram on an interval. When a check fails, a
+lightweight WAN probe (the `generate_204` endpoints from Google and Cloudflare — built for
+exactly this kind of continuous connectivity checking, and only ever contacted while Telegram
+is already unreachable) classifies the outage:
+
+- **Internet down** — a restart cannot bring the line back, so the watchdog waits it out.
+  Pyrogram reconnects on its own once the line returns; the give-up clock is paused.
+- **Internet up, Telegram unreachable** — the give-up clock runs. Once *both* thresholds are
+  exceeded — enough consecutive failures to rule out a single blip
+  (`telegram_healthcheck_max_failures`) and `telegram_healthcheck_max_unhealthy_seconds`
+  (default 900) of continuous Telegram-only failure — the watchdog raises a
+  `ConnectionHealthError` and exits with a non-zero code, so a process manager
+  (**supervisor / systemd / PM2**) can restart the bot cleanly. That is the stuck-session
+  case a restart actually fixes — never a restart loop through a long line outage.
 
 ### 🔁 Hard-exit vs. keep-alive
 
@@ -300,7 +312,7 @@ Whether the bot actually exits on connection loss is controlled by
 
 | Value | Behaviour | Use when |
 |---|---|---|
-| `true` *(default)* | After `telegram_healthcheck_max_failures` failed checks the bot **exits with code 1** so your process manager restarts it. | You run it under supervisor / systemd / PM2. |
+| `true` *(default)* | When the watchdog gives up (see above), the bot **exits with code 1** so your process manager restarts it. | You run it under supervisor / systemd / PM2. |
 | `false` | The bot **keeps running**, resets the counter and relies on Pyrogram's built-in **auto-reconnect**. | You run `python bot.py` directly, without a process manager. |
 
 <details>
@@ -419,16 +431,17 @@ This is a **userbot** that automates actions on your personal Telegram account. 
 responsibly and in line with [Telegram's Terms of Service](https://telegram.org/tos). The
 authors are not responsible for misuse or account restrictions.
 
-## Netzwerk-Ausfall
+## 🌐 Network-outage philosophy
 
-Der Host haengt an einem privaten Anschluss; ein WAN-Ausfall ist der Normalfall.
-Verbindliches Schema fuer alle Bots dieses Hosts (siehe `_template_/CLAUDE.md`):
+Designed for hosts on residential lines, where a WAN outage is a normal event, not an
+exception:
 
-- Der Verbindungsaufbau gibt nie nach N Versuchen auf; Pyrogram reconnected von
-  sich aus weiter.
-- Der Watchdog gibt erst nach einer **Dauer** auf
-  (`telegram_healthcheck_max_unhealthy_seconds`, 900s), nicht nach einem reinen
-  Fehlerzaehler: ein Zaehler restartet den Prozess alle paar Minuten durch einen
-  stundenlangen Ausfall hindurch und gewinnt dabei nichts.
-- Aufgeben heisst Hard-Exit fuer den Supervisor, nicht stiller Weiterlauf.
-- Transiente Fehler gedrosselt loggen, aber nie unsichtbar machen.
+- Connecting **never gives up after N attempts** — waiting for the line to come back is
+  exactly what a supervised daemon is for; Pyrogram keeps reconnecting on its own.
+- Giving up is **duration-based, never counter-based** — a pure failure counter restarts the
+  process every few minutes for the whole length of an hours-long outage and gains nothing.
+- A **WAN outage pauses the give-up clock** — the `generate_204` probe distinguishes "the
+  line is dead" (wait) from "Telegram alone is unreachable" (a restart plausibly helps).
+- Giving up means a **hard exit for the process manager**, never a silent zombie.
+- Transient errors are **logged throttled but never invisibly** — a window in which the bot
+  receives nothing must show up in the log.
