@@ -4,6 +4,7 @@ import asyncio
 import sys
 import time
 import traceback
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -105,6 +106,15 @@ HEALTHCHECK_MAX_UNHEALTHY_SECONDS = _get_config_int(
     ["recovery", "telegram_healthcheck_max_unhealthy_seconds"], default=900
 )
 SHUTDOWN_TIMEOUT_SECONDS = _get_config_int(["recovery", "telegram_shutdown_timeout_seconds"], default=30)
+# Captive-portal-style endpoints that answer a bodyless HTTP 204 and are built
+# for exactly this kind of continuous probing (no rate limiting, no abuse
+# detection). Two vendors, so a single vendor outage is not misread as the
+# whole WAN being down.
+WAN_PROBE_URLS: tuple[str, ...] = (
+    "http://connectivitycheck.gstatic.com/generate_204",
+    "http://cp.cloudflare.com/generate_204",
+)
+WAN_PROBE_TIMEOUT_SECONDS = 5
 # When the watchdog gives up on the Telegram connection, should the bot hard-exit
 # (so a process manager restarts it) or keep running and rely on auto-reconnect?
 # Defaults to True when the key is missing or null (e.g. older configs without
@@ -268,25 +278,64 @@ class ConnectionHealthError(RuntimeError):
     """Raised when the Telegram connection cannot recover, signalling a hard restart."""
 
 
+def _wan_probe(urls: tuple[str, ...] = WAN_PROBE_URLS, timeout: float = WAN_PROBE_TIMEOUT_SECONDS) -> bool:
+    """Blocking WAN probe used to classify a failed Telegram healthcheck.
+
+    Args:
+        urls: Probe endpoints tried in order.
+        timeout: Per-request timeout in seconds.
+
+    Returns:
+        True when any probe URL answers with HTTP 204 (the internet is up).
+    """
+    for url in urls:
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as response:
+                if response.status == 204:
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+async def wan_is_up() -> bool:
+    """Run the blocking WAN probe off the event loop.
+
+    Returns:
+        True when the internet connection itself is working.
+    """
+    return await asyncio.to_thread(_wan_probe)
+
+
 async def connection_watchdog(client: Client) -> None:
     """Periodically ping Telegram and react to an unrecoverable connection failure.
 
-    Pings the Telegram connection on a fixed interval. After
-    ``HEALTHCHECK_MAX_FAILURES`` consecutive failed checks the behaviour depends on
-    ``WATCHDOG_HARD_EXIT`` (config ``recovery.watchdog_hard_exit``): if enabled
-    (default) it raises ``ConnectionHealthError`` so the process can exit and be
-    restarted by a process manager; if disabled it logs the failure, resets the
-    counter and keeps monitoring, relying on Pyrogram's auto-reconnect.
+    Pings the Telegram connection on a fixed interval. A failed check triggers a
+    WAN probe (:func:`wan_is_up`, only ever called while Telegram is already
+    unreachable) that classifies the outage: if the internet itself is down, the
+    give-up clock pauses — a restart cannot bring the line back, and Pyrogram
+    reconnects on its own once it returns. The watchdog only gives up when both
+    conditions hold with a *working* internet connection: enough consecutive
+    failures to rule out a single blip (``HEALTHCHECK_MAX_FAILURES``) and
+    ``HEALTHCHECK_MAX_UNHEALTHY_SECONDS`` of continuous Telegram-only failure —
+    the stuck-session case a restart actually repairs.
+
+    Giving up then depends on ``WATCHDOG_HARD_EXIT`` (config
+    ``recovery.watchdog_hard_exit``): if enabled (default) it raises
+    ``ConnectionHealthError`` so the process can exit and be restarted by a
+    process manager; if disabled it logs the failure, resets the counters and
+    keeps monitoring, relying on Pyrogram's auto-reconnect.
 
     Args:
         client: The running Pyrogram client to health-check.
 
     Raises:
-        ConnectionHealthError: After too many consecutive failed health checks,
-            unless ``WATCHDOG_HARD_EXIT`` is disabled.
+        ConnectionHealthError: After Telegram stays unreachable despite a working
+            internet connection, unless ``WATCHDOG_HARD_EXIT`` is disabled.
     """
     failures = 0
     unhealthy_since: float | None = None
+    telegram_only_since: float | None = None
 
     while True:
         await asyncio.sleep(HEALTHCHECK_INTERVAL_SECONDS)
@@ -301,24 +350,37 @@ async def connection_watchdog(client: Client) -> None:
                 )
             failures = 0
             unhealthy_since = None
+            telegram_only_since = None
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             failures += 1
+            now = time.monotonic()
             if unhealthy_since is None:
-                unhealthy_since = time.monotonic()
-            unhealthy_for = time.monotonic() - unhealthy_since
+                unhealthy_since = now
+            unhealthy_for = now - unhealthy_since
+            wan_up = await wan_is_up()
+            if wan_up:
+                if telegram_only_since is None:
+                    telegram_only_since = now
+                telegram_only_for = now - telegram_only_since
+            else:
+                # A dead line is not something a restart can fix: hold the
+                # give-up clock until the WAN is back.
+                telegram_only_since = None
+                telegram_only_for = 0.0
             # Both must be true: enough failures to rule out a single blip, and
-            # long enough to rule out a short outage Pyrogram will ride out by
-            # itself. Restarting every five minutes through a two-hour WAN
-            # outage only churns the process.
-            give_up = failures >= HEALTHCHECK_MAX_FAILURES and unhealthy_for >= HEALTHCHECK_MAX_UNHEALTHY_SECONDS
+            # long enough Telegram-only failure to rule out a short outage
+            # Pyrogram will ride out by itself. Restarting every five minutes
+            # through a two-hour WAN outage only churns the process.
+            give_up = failures >= HEALTHCHECK_MAX_FAILURES and telegram_only_for >= HEALTHCHECK_MAX_UNHEALTHY_SECONDS
             logger.warning(
-                "Telegram healthcheck failed %s/%s (%.0fs/%ss unhealthy): %s",
+                "Telegram healthcheck failed %s/%s (%.0fs/%ss unhealthy, internet %s): %s",
                 failures,
                 HEALTHCHECK_MAX_FAILURES,
                 unhealthy_for,
                 HEALTHCHECK_MAX_UNHEALTHY_SECONDS,
+                "up" if wan_up else "down",
                 exc,
                 exc_info=give_up,
             )
@@ -338,6 +400,7 @@ async def connection_watchdog(client: Client) -> None:
                 )
                 failures = 0
                 unhealthy_since = None
+                telegram_only_since = None
 
 
 async def main() -> None:
