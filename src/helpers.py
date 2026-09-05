@@ -372,9 +372,8 @@ async def send_and_delete_message(client: Client, message: Message, text: str, d
     - Normal: reply in chat, wait, delete reply + original (visible to chat partner).
     - Covert (when ``message.scheduled`` is True): send the answer as a scheduled
       message in the same chat so it shows up only in the user's scheduled-messages
-      view. Both the original scheduled command and the scheduled answer are then
-      deleted before they could actually fire, so the chat partner never sees
-      anything.
+      view. Remove the original command immediately, before sending the answer,
+      so a near-due command cannot fire during the display delay.
 
     Args:
         client: The Pyrogram client used to send the covert scheduled reply.
@@ -387,9 +386,10 @@ async def send_and_delete_message(client: Client, message: Message, text: str, d
         if _is_scheduled_message(message):
             delete_delay = SCHEDULED_RESPONSE_DELETE_DELAY_SECONDS
             response_text = _format_scheduled_response_text(text)
-            # Match the command's own schedule_date so the reply sits next to it
-            # in the scheduled-messages view. Both get deleted before they fire.
-            # Fallback: 30 days out if the command somehow has no date.
+            # Moving only the answer's date cannot stop the original firing.
+            if await message.delete() is False:
+                raise RuntimeError("Scheduled command could not be deleted")
+            # Keep the requested date only when there is time to clean up.
             schedule_date = message.date
             now = (
                 datetime.now(schedule_date.tzinfo)
@@ -407,9 +407,10 @@ async def send_and_delete_message(client: Client, message: Message, text: str, d
                 text=response_text,
                 schedule_date=schedule_date,
             )
-            await asyncio.sleep(delete_delay)
-            await status_message.delete()
-            await message.delete()
+            try:
+                await asyncio.sleep(delete_delay)
+            finally:
+                await status_message.delete()
             logger.info("Covert scheduled reply sent and cleaned up")
         else:
             logger.info(f"Sending message with delay {delay}")
