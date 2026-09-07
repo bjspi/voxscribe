@@ -270,9 +270,11 @@ text messages. The file contains the **original speech-to-text transcript** and 
 **rephrased version**, under separate headings, with the sender and voice duration.
 Both texts are included in full and retain their paragraphs and Markdown formatting.
 
-Files are named after the voice sender's Telegram username and duration, for example
-`alex_14m03s.md`. If there is no username, the sender's display name or ID is used;
-characters unsuitable for filenames are replaced with underscores.
+Files are named after the voice timestamp (`YYYYMMDD_HHhMMm`), the sender's Telegram
+username and the duration, for example `20260907_08h43m_alex_14m03s.md`, so they sort
+chronologically in any folder. If there is no username, the sender's display name or ID
+is used; characters unsuitable for filenames are replaced with underscores. The file is
+sent without a caption; only provider fallback or rephrasing warnings appear as caption.
 
 Markdown mode always requests both versions using the configured providers and prompts,
 even if `/rephrase` is off for normal text messages. If rephrasing fails, the file still

@@ -8,6 +8,7 @@ import os
 import re
 import tempfile
 import textwrap
+from datetime import datetime
 from html import escape
 from io import BytesIO
 from typing import Any, BinaryIO, Literal, TypedDict, cast
@@ -219,10 +220,13 @@ def _build_voice_reference(message: Message) -> str:
 
 
 def _build_markdown_filename(message: Message) -> str:
-    """Use the sender and duration as a filename safe to save on any platform."""
+    """Prefix the voice timestamp so files sort chronologically on any platform."""
+    sent_at = getattr(message, "date", None)
+    if not isinstance(sent_at, datetime):
+        sent_at = datetime.now()
     sender = re.sub(r"[^\w-]+", "_", _get_sender_label(message))[:80].strip("_-") or "voice"
     minutes, seconds = _format_voice_duration(getattr(message.voice, "duration", 0)).split(":")
-    return f"{sender}_{minutes}m{seconds}s.md"
+    return f"{sent_at:%Y%m%d_%Hh%Mm}_{sender}_{minutes}m{seconds}s.md"
 
 
 def _build_markdown_document(
@@ -741,9 +745,11 @@ async def transcribe_voice(client: Client, message: Message) -> None:
         if markdown_output:
             document_text = _build_markdown_document(message, original_text, rephrased_text, rephrase_notice)
             filename = _build_markdown_filename(message)
-            caption = f"📝 {voice_reference}{fallback_notice}"
+            # The filename already carries sender, time and duration: send only the
+            # file and reserve the caption for warnings.
+            caption = fallback_notice.strip()
             if rephrase_notice:
-                caption += f"\n⚠️ {rephrase_notice}"
+                caption = f"{caption}\n⚠️ {rephrase_notice}".strip()
             with BytesIO(document_text.encode("utf-8")) as document:
                 document.name = filename
                 sent_message = await message.reply_document(
