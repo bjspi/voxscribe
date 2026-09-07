@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import tempfile
 import textwrap
 from html import escape
+from io import BytesIO
 from typing import Any, BinaryIO, Literal, TypedDict, cast
 
 import openai
@@ -214,6 +216,29 @@ def _build_voice_reference(message: Message) -> str:
     voice = getattr(message, "voice", None)
     duration = _format_voice_duration(getattr(voice, "duration", 0))
     return f"{_get_sender_label(message)} ({duration})"
+
+
+def _build_markdown_filename(message: Message) -> str:
+    """Use the sender and duration as a filename safe to save on any platform."""
+    sender = re.sub(r"[^\w-]+", "_", _get_sender_label(message))[:80].strip("_-") or "voice"
+    minutes, seconds = _format_voice_duration(getattr(message.voice, "duration", 0)).split(":")
+    return f"{sender}_{minutes}m{seconds}s.md"
+
+
+def _build_markdown_document(
+    message: Message, original_text: str, rephrased_text: str | None, rephrase_notice: str = ""
+) -> str:
+    """Keep both complete versions, including paragraphs, in a single document."""
+    # Keep user-controlled names on one metadata line and escape Markdown syntax.
+    sender = re.sub(r"([\\`*_{}\[\]<>()#!|])", r"\\\1", " ".join(_get_sender_label(message).split()))
+    duration = _format_voice_duration(getattr(message.voice, "duration", 0))
+    rephrased_section = rephrased_text if rephrased_text is not None else f"> {rephrase_notice}"
+    return (
+        f"# Voice transcription\n\n"
+        f"Sender: {sender}  \nDuration: {duration}\n\n"
+        f"## Original transcription\n\n{original_text}\n\n"
+        f"## Rephrased version\n\n{rephrased_section}\n"
+    )
 
 
 def _collect_exception_messages(exc: Exception) -> list[str]:
@@ -607,6 +632,7 @@ async def transcribe_voice(client: Client, message: Message) -> None:
         openai_client = openai.OpenAI(api_key=current_config["openai_api_key"])
 
     chat_config = get_chat_config(str(message.chat.id))
+    markdown_output = bool(chat_config.get("markdown_output", 0))
     tmp_path: str | None = None
 
     try:
@@ -650,8 +676,12 @@ async def transcribe_voice(client: Client, message: Message) -> None:
         }
         logger.info(f"Transcription Process Details: {json.dumps(log_data, indent=2)}")
 
-        # Rephrase transcription if enabled
-        if chat_config.get("rephrasing", 1):
+        original_text = text
+        rephrased_text: str | None = None
+        rephrase_notice = ""
+
+        # Markdown files always include both versions, independent of text mode.
+        if markdown_output or chat_config.get("rephrasing", 1):
             # Determine which prompt to use based on message direction
             if message.outgoing:
                 # Use outgoing specific prompt if available, otherwise fall back to default
@@ -665,7 +695,6 @@ async def transcribe_voice(client: Client, message: Message) -> None:
                 system_prompt = current_config["rephrase_prompt"]
 
             try:
-                original_text = text
                 text, provider, model = await asyncio.to_thread(
                     _rephrase_with_provider,
                     current_config["rephrase_provider"],
@@ -675,40 +704,32 @@ async def transcribe_voice(client: Client, message: Message) -> None:
                     system_prompt,
                     text,
                 )
+                rephrased_text = text
                 log_data = {
                     "provider": provider,
                     "event": "rephrasing_completed",
                     "chat_info": chat_info,
                     "type": "rephrasing",
                     "model": model,
+                    "rephrasing_input_length": len(original_text),
+                    "rephrasing_result_length": len(text),
                     "rephrasing_input": _log_content(original_text, verbose_logging),
                     "rephrasing_result": _log_content(text, verbose_logging),
                 }
                 logger.info(f"Transcription Process Details: {json.dumps(log_data, indent=2)}")
             except Exception as rephrase_exc:
                 rephrase_error_code, rephrase_hint = _classify_provider_error(rephrase_exc)
-                if current_config["graceful_degradation_enabled"]:
+                if markdown_output or current_config["graceful_degradation_enabled"]:
                     logger.warning(
                         f"Rephrasing skipped in {chat_info}: {rephrase_error_code} ({rephrase_hint})", exc_info=True
                     )
-                    await message.reply_text(
-                        f"⚠️ Rephrasing skipped: {rephrase_hint} ({current_config['rephrase_provider']})"
-                    )
+                    rephrase_notice = f"Rephrasing unavailable: {rephrase_hint} ({current_config['rephrase_provider']})."
+                    if not markdown_output:
+                        await message.reply_text(
+                            f"⚠️ Rephrasing skipped: {rephrase_hint} ({current_config['rephrase_provider']})"
+                        )
                 else:
                     raise rephrase_exc
-
-        # Strip leading/trailing quotes and spaces
-        text = text.strip(' "')
-
-        # Telegram's hard limit is 4096 characters. We wrap on the RAW text, but
-        # each chunk is afterwards HTML-escaped (``<`` -> ``&lt;`` etc.) and wrapped
-        # in a reference line plus <blockquote> tags, all of which grow the final
-        # message. Keep the chunk width well below 4096 so the escaped result stays
-        # safely under the limit even for escape-heavy text.
-        max_length = 3000
-
-        # Split text into chunks if it's too long
-        chunks = textwrap.wrap(text, width=max_length, break_long_words=False, break_on_hyphens=False)
 
         fallback_notice = ""
         if fallback_used:
@@ -717,16 +738,37 @@ async def transcribe_voice(client: Client, message: Message) -> None:
             )
 
         voice_reference = escape(_build_voice_reference(message))
-        for i, chunk in enumerate(chunks):
-            part_reference = f" Part {i + 1}/{len(chunks)}" if len(chunks) > 1 else ""
-            first_chunk_notice = fallback_notice if i == 0 else ""
-            txt = (
-                f"📝 {voice_reference}{part_reference}{first_chunk_notice}\n"
-                f"<blockquote expandable>{escape(chunk)}</blockquote>"
+        if markdown_output:
+            document_text = _build_markdown_document(message, original_text, rephrased_text, rephrase_notice)
+            filename = _build_markdown_filename(message)
+            caption = f"📝 {voice_reference}{fallback_notice}"
+            if rephrase_notice:
+                caption += f"\n⚠️ {rephrase_notice}"
+            with BytesIO(document_text.encode("utf-8")) as document:
+                document.name = filename
+                sent_message = await message.reply_document(
+                    document, file_name=filename, caption=caption, quote=not delete_voice_flag
+                )
+            logger.info(
+                "Markdown document sent in %s: voice_id=%s, document_message_id=%s, "
+                "filename=%s, original_length=%s, rephrased_length=%s",
+                chat_info, message.id, sent_message.id, filename, len(original_text),
+                len(rephrased_text) if rephrased_text is not None else None,
             )
+        else:
+            # Leave room for the reference, HTML escaping and blockquote tags.
+            text = text.strip(' "')
+            chunks = textwrap.wrap(text, width=3000, break_long_words=False, break_on_hyphens=False)
+            for i, chunk in enumerate(chunks):
+                part_reference = f" Part {i + 1}/{len(chunks)}" if len(chunks) > 1 else ""
+                first_chunk_notice = fallback_notice if i == 0 else ""
+                txt = (
+                    f"📝 {voice_reference}{part_reference}{first_chunk_notice}\n"
+                    f"<blockquote expandable>{escape(chunk)}</blockquote>"
+                )
 
-            # Send the transcription as a reply (quote only on first part if not deleting)
-            await message.reply_text(txt, quote=(i == 0) and not delete_voice_flag)
+                # Quote only on the first part if the voice will be kept.
+                await message.reply_text(txt, quote=(i == 0) and not delete_voice_flag)
 
         # Delete the original voice message if configured to do so
         if delete_voice_flag:

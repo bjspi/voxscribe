@@ -17,6 +17,7 @@ A self-hosted Telegram **userbot** that transcribes voice messages in real time 
 - 👥 **Per-chat control** — each 1:1 and each group keeps its own independent settings
 - 🔁 **Two directions** — transcribe what you *receive*, what you *send*, or both
 - 🧠 **AI rephrasing** — optionally clean up filler words while keeping your tone & style
+- 📄 **Markdown files per chat** — send the original transcript and rephrased version together in one `.md` attachment; off by default
 - ⚡ **Built for speed** — Groq's LPU or OpenAI Whisper, your choice per task
 - 🎛️ **Mixed mode** — e.g. Groq for fast transcription, OpenAI for high-quality rephrasing
 - 🧹 **Auto cleanup** — delete the original voice note after transcription
@@ -253,6 +254,7 @@ them invisible to your partner.
 | `/tin` | Toggle transcription of **incoming** voices |
 | `/tout` | Toggle transcription of **outgoing** voices |
 | `/rephrase` | Toggle AI rephrasing of transcriptions |
+| `/tmd [on\|off]` | Toggle Markdown attachments for this chat, or explicitly enable/disable them (default: off) |
 | `/delin` | Toggle deletion of **incoming** voices after transcription |
 | `/delout` | Toggle deletion of **outgoing** voices after transcription |
 | `/prompt` | Show the current rephrasing prompt |
@@ -260,6 +262,28 @@ them invisible to your partner.
 | `/setprompt` | Set a custom rephrasing prompt |
 | `/setprompt_in` | Set a custom rephrasing prompt for incoming messages |
 | `/setprompt_out` | Set a custom rephrasing prompt for outgoing messages |
+
+### 📄 Markdown attachments
+
+Send `/tmd on` in a chat to receive **one Markdown file per voice** instead of split
+text messages. The file contains the **original speech-to-text transcript** and the
+**rephrased version**, under separate headings, with the sender and voice duration.
+Both texts are included in full and retain their paragraphs and Markdown formatting.
+
+Files are named after the voice sender's Telegram username and duration, for example
+`alex_14m03s.md`. If there is no username, the sender's display name or ID is used;
+characters unsuitable for filenames are replaced with underscores.
+
+Markdown mode always requests both versions using the configured providers and prompts,
+even if `/rephrase` is off for normal text messages. If rephrasing fails, the file still
+contains the original transcript and clearly marks the rephrased version as unavailable.
+The original transcript is the speech recognition provider's output; it is preserved
+before the separate rephrasing step.
+
+This setting applies independently to each chat and to both enabled voice directions.
+It is **off by default**, including for existing chats. `/tmd off` restores text messages;
+`/tmd` without an argument toggles the setting. `/statusv` shows its current state.
+The existing transcription and voice-deletion settings still apply.
 
 ### 🧩 The naming logic (so you never need the cheat sheet)
 
@@ -369,6 +393,7 @@ your private chats) and written atomically, with a `.json.backup` kept alongside
         "transcription_in": 1,     // transcribe incoming voices     (/tin)
         "transcription_out": 1,    // transcribe your own voices     (/tout)
         "rephrasing": 0,           // AI rephrasing on/off           (/rephrase)
+        "markdown_output": 0,      // one .md: original + rephrased  (/tmd)
         "delete_incoming_voice": 0,// delete incoming after text     (/delin)
         "delete_outgoing_voice": 0,// delete outgoing after text     (/delout)
         "rephrase_prompt": "",     // legacy/global custom prompt
