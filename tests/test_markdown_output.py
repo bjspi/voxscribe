@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from contextlib import ExitStack
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -23,6 +24,7 @@ class MarkdownTranscriptionTests(unittest.IsolatedAsyncioTestCase):
         self.rephrased = "## Ein Thema\n\nÜberarbeiteter Text.\n\n- Ein Punkt\n- Noch ein Punkt"
         self.message = SimpleNamespace(
             id=42,
+            date=datetime(2026, 9, 7, 8, 43, 12),
             chat=SimpleNamespace(id=1, first_name="Chat partner"),
             from_user=SimpleNamespace(username="alex_test", first_name="Alex", last_name="Example", id=2),
             outgoing=False,
@@ -84,7 +86,8 @@ class MarkdownTranscriptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(f"## Rephrased version\n\n{self.rephrased}\n", self.uploaded_text)
         self.assertIn("Duration: 14:03", self.uploaded_text)
         kwargs = self.message.reply_document.call_args.kwargs
-        self.assertEqual(kwargs["file_name"], "alex_test_14m03s.md")
+        self.assertEqual(kwargs["file_name"], "20260907_08h43m_alex_test_14m03s.md")
+        self.assertEqual(kwargs["caption"], "")
         self.assertTrue(kwargs["quote"])
         self.assertTrue(self.upload.closed)
         self.assertFalse(self.audio_path.exists())
@@ -120,7 +123,9 @@ class MarkdownTranscriptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(self.original, self.uploaded_text)
         self.assertIn("## Rephrased version\n\n> Rephrasing unavailable:", self.uploaded_text)
         self.assertNotIn(self.rephrased, self.uploaded_text)
-        self.assertIn("Rephrasing unavailable", self.message.reply_document.call_args.kwargs["caption"])
+        caption = self.message.reply_document.call_args.kwargs["caption"]
+        self.assertTrue(caption.startswith("⚠️ Rephrasing unavailable"))
+        self.assertNotIn("📝", caption)
 
     async def test_outgoing_voice_uses_sender_prompt_and_deletes_only_after_upload(self) -> None:
         self.message.outgoing = True
@@ -136,7 +141,7 @@ class MarkdownTranscriptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events, ["uploaded", "deleted"])
         self.assertEqual(self.rephrase.call_args.args[-2], "Custom outgoing prompt")
         kwargs = self.message.reply_document.call_args.kwargs
-        self.assertEqual(kwargs["file_name"], "my_username_14m03s.md")
+        self.assertEqual(kwargs["file_name"], "20260907_08h43m_my_username_14m03s.md")
         self.assertFalse(kwargs["quote"])
 
     async def test_failed_upload_keeps_voice_and_cleans_temporary_files(self) -> None:
@@ -159,10 +164,22 @@ class MarkdownTranscriptionTests(unittest.IsolatedAsyncioTestCase):
         self.message.from_user.username = None
         self.message.from_user.first_name = '../Alex: <Test>\\Name\n'
         self.message.voice.duration = 65
-        self.assertEqual(_build_markdown_filename(self.message), "Alex_Test_Name_Example_1m05s.md")
+        self.assertEqual(_build_markdown_filename(self.message), "20260907_08h43m_Alex_Test_Name_Example_1m05s.md")
         self.message.from_user.first_name = None
         self.message.from_user.last_name = None
-        self.assertEqual(_build_markdown_filename(self.message), "2_1m05s.md")
+        self.assertEqual(_build_markdown_filename(self.message), "20260907_08h43m_2_1m05s.md")
+
+    def test_filename_uses_current_time_when_message_date_is_missing(self) -> None:
+        self.message.date = None
+        self.message.voice.duration = 65
+
+        class FrozenDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 1, 2, 3, 4)
+
+        with patch("src.transcription.datetime", FrozenDatetime):
+            self.assertEqual(_build_markdown_filename(self.message), "20260102_03h04m_alex_test_1m05s.md")
 
 
 class MarkdownSettingsTests(unittest.IsolatedAsyncioTestCase):
