@@ -7,7 +7,7 @@
 
 > Turn every voice message into clean, readable text — automatically, on your own Telegram account, in **any** chat.
 
-A self-hosted Telegram **userbot** that transcribes voice messages in real time using AI speech recognition. It works in **1-on-1 DMs and group chats alike**, listens to incoming **and** outgoing voices, optionally rephrases the transcription into polished text, and can clean up the original audio afterwards — all controlled per chat with simple slash commands.
+A self-hosted Telegram **userbot** that transcribes voice messages in real time using AI speech recognition. It works in **1-on-1 DMs and group chats alike**, listens to incoming **and** outgoing voices, optionally rephrases the transcription into polished text, and can clean up the original audio afterwards — all controlled per chat with simple slash commands or, optionally, a button-driven control bot.
 
 ---
 
@@ -18,6 +18,8 @@ A self-hosted Telegram **userbot** that transcribes voice messages in real time 
 - 🔁 **Two directions** — transcribe what you *receive*, what you *send*, or both
 - 🧠 **AI rephrasing** — optionally clean up filler words while keeping your tone & style
 - 📄 **Markdown files per chat** — send the original transcript and rephrased version together in one `.md` attachment; off by default
+- 🎛️ **Control bot** — an optional BotFather bot with an inline-button menu: see every chat, add / pause / delete chats and flip *all* per-chat settings from one place
+- 🧩 **Prompt templates** — freely configurable rephrasing templates (with summary, summary only, bullet points, verbatim, …) selectable per chat and direction
 - ⚡ **Built for speed** — Groq's LPU or OpenAI Whisper, your choice per task
 - 🎛️ **Mixed mode** — e.g. Groq for fast transcription, OpenAI for high-quality rephrasing
 - 🧹 **Auto cleanup** — delete the original voice note after transcription
@@ -51,7 +53,8 @@ A self-hosted Telegram **userbot** that transcribes voice messages in real time 
 5. *(Optional)* The original voice note is deleted to keep the chat tidy.
 
 > 💡 **Pro tip:** Run any command from a chat's *Scheduled Messages* view to keep both the
-> command **and** its reply invisible to your chat partner.
+> command **and** its reply invisible to your chat partner — or skip in-chat commands entirely
+> and manage every chat from the optional [control bot](#control-bot).
 
 ---
 
@@ -172,7 +175,47 @@ quality** — take a minute to adapt them before relying on the bot:
 
 Both prompts ship with sensible English defaults in `config.example.yaml`; treat them as a
 starting point and make them yours. Per-chat overrides are also possible via `/setprompt`,
-`/setprompt_in` and `/setprompt_out`.
+`/setprompt_in` and `/setprompt_out` — or by picking a **prompt template** in the control bot.
+
+<a id="prompt-templates"></a>
+### 🧩 Prompt templates
+
+Templates are named rephrasing prompts you can assign **per chat and per direction**
+(incoming / outgoing) through the [control bot](#control-bot). They live under
+`prompts.templates` in `config.yaml`:
+
+```yaml
+prompts:
+  rephrase: |
+    ...your default rephrasing prompt...
+
+  templates:
+    - key: summary                     # short id, max 24 chars, no "|"
+      name: "Clean-up + summary"       # shown on the buttons
+      prompt: |
+        {default_prompt}               # expands to prompts.rephrase
+
+        **Additional rule — summary**
+        Start your answer with a one- or two-sentence summary prefixed with "TL;DR:",
+        followed by a blank line and then the revised text.
+    - key: summary_only
+      name: "Summary only"
+      prompt: |
+        Return only a concise summary of the message as at most five bullet points ...
+```
+
+- The placeholder **`{default_prompt}`** expands to your tuned `prompts.rephrase`, so
+  "default rules + something extra" templates never drift from the default.
+- A chat stores only the template **key**. Editing a template in `config.yaml` changes the
+  behaviour of every chat using it immediately — no restart, no re-assigning.
+- Four templates ship built in and are used when the `templates` list is absent:
+  **Clean-up + summary**, **Summary only**, **Bullet points** and **Verbatim (minimal
+  edits)**. Copy them from `config.example.yaml` to adapt them, or set `templates: []` to
+  offer none.
+- Precedence per direction: a **custom prompt** typed for the chat (`/setprompt_in`,
+  `/setprompt_out` or *Custom text…* in the control bot) beats a **template**, which beats
+  the global **default**. Typing a custom prompt clears the template for that direction;
+  choosing a template or *Default* clears the custom text.
 
 ### 🔀 Mixed Mode
 
@@ -222,6 +265,9 @@ logging:
 |---|---|---|
 | `transcription_enabled_new_chats` | `true` | Whether a brand-new chat (not yet in `chats.json`) transcribes automatically. Existing chats keep their own saved setting. |
 | `logging.verbose` | `false` | When off, transcription/rephrasing content is logged only as a ~200-char preview. Turn on to log full content while debugging. |
+| `control_bot.token` | *(empty)* | BotFather token of the optional [control bot](#control-bot). Empty = disabled. |
+| `control_bot.owner_id` | `0` | Your numeric Telegram user id — the only user allowed to talk to the control bot. Required when a token is set. |
+| `prompts.templates` | *(built-in)* | List of [prompt templates](#prompt-templates) selectable per chat. |
 
 ---
 
@@ -249,6 +295,7 @@ them invisible to your partner.
 |---|---|
 | `/helpv` | Show all commands + current settings |
 | `/statusv` | Show current transcription settings |
+| `/vox` | Show **every** setting of this chat (state, direction, output, rephrasing, deletion, prompts) together with the command that changes it |
 | `/ton` | Enable transcription globally for this chat |
 | `/toff` | Disable transcription globally for this chat |
 | `/tin` | Toggle transcription of **incoming** voices |
@@ -287,6 +334,30 @@ It is **off by default**, including for existing chats. `/tmd off` restores text
 `/tmd` without an argument toggles the setting. `/statusv` shows its current state.
 The existing transcription and voice-deletion settings still apply.
 
+### 🎙️ `/vox` — the whole chat configuration at a glance
+
+`/vox` prints a compact panel with the current value of **every** per-chat setting next to
+the slash command that changes it — master switch, incoming / outgoing, output mode
+(inline text or Markdown file), rephrasing, voice deletion and the active rephrasing prompt
+per direction (*Default*, *Template: …* or *Custom*). Like all other commands it deletes
+itself after a few seconds and works from *Scheduled Messages* too.
+
+```
+🎙️ voxscribe — chat settings
+Alice (11122233)
+
+Transcription ✅ on             /ton · /toff
+  Incoming    ✅ on             /tin
+  Outgoing    ✅ on             /tout
+Output        💬 inline text    /tmd on|off
+Rephrasing    ✅ on             /rephrase
+Delete voice
+  Incoming    ❌ off            /delin
+  Outgoing    ❌ off            /delout
+Prompt in     Default           /setprompt_in
+Prompt out    Template: Clean-up + summary   /setprompt_out
+```
+
 ### 🧩 The naming logic (so you never need the cheat sheet)
 
 The commands are built from small, memorable building blocks:
@@ -301,6 +372,104 @@ The commands are built from small, memorable building blocks:
 
 So `tin` = **t**ranscribe **in**coming (toggle), `delout` = **del**ete **out**going, `ton` =
 **t**ranscription **on**. Once it clicks, you'll never open `/helpv` again.
+
+---
+
+<a id="control-bot"></a>
+## 🎛️ Control bot (optional)
+
+Slash commands are great inside a chat, but they only ever configure *that* chat. The
+**control bot** gives you one private place to see and manage **all** chats: a regular
+BotFather bot with an inline-button menu that runs next to the userbot, in the same process,
+and edits the same `chats.json` — every tap applies to the next voice message immediately.
+
+<table>
+  <tr>
+    <th>Main menu</th>
+    <th>Chat settings</th>
+    <th>Prompt picker</th>
+  </tr>
+  <tr>
+    <td valign="top"><pre>🎛 Voice Transcriber — Control
+
+[ 📊 Status ]
+[ 💬 Chats ] [ 🧩 Prompt templates ]</pre></td>
+    <td valign="top"><pre>💬 Alice  11122233
+
+State:       ▶️ active
+Direction:   both
+Output:      💬 inline text
+Rephrasing:  on
+Delete voice: incoming off · outgoing off
+Prompt in:   Default
+Prompt out:  Template: Clean-up + summary
+
+[ ⏸ Pause chat ]
+— Direction —
+[ ▫️ Incoming ] [ ▫️ Outgoing ] [ ✅ Both ]
+— Output —
+[ ✅ 💬 Inline text ] [ ▫️ 📄 Markdown file ]
+— Rephrasing —
+[ ✅ 🧠 AI rephrasing ]
+— Delete voice after transcription —
+[ ▫️ 🗑 Incoming ] [ ▫️ 🗑 Outgoing ]
+[ 🧩 Prompts ]
+[ 🗑 Delete chat ]
+[ ⬅️ Back ]</pre></td>
+    <td valign="top"><pre>🧩 Alice  11122233
+
+Choose the rephrasing prompt
+for outgoing voices.
+
+[ ▫️ 🌐 Default (config.yaml) ]
+[ ✅ Clean-up + summary ]
+[ ▫️ Summary only ]
+[ ▫️ Bullet points ]
+[ ▫️ Verbatim (minimal edits) ]
+[ ▫️ ✍️ Custom text… ]
+[ ⬅️ Back ]</pre></td>
+  </tr>
+</table>
+
+### What you can do
+
+| Screen | Actions |
+|---|---|
+| **📊 Status** | Providers and models in use, number of templates, active / paused chat counts, a one-line summary per chat (`▶️ Alice · both · 💬 text · 🧠`). |
+| **💬 Chats** | Every configured chat as a button (paged, 12 per page, unnamed chats last). **➕ Add chat** picks from your 20 most recently active dialogs or takes a typed id / `@username`. |
+| **Chat settings** | **Pause / resume** (master switch), **direction** (incoming / outgoing / both), **output** (inline text or Markdown file), **AI rephrasing**, **delete voice** after transcription per direction, and **🗑 Delete chat** (always behind a confirm screen). |
+| **🧩 Prompts** | Per direction: pick a **template**, fall back to the global **default**, or type a **custom prompt** as a message. *Set both directions* applies one choice to incoming and outgoing. *View* shows the full active prompt text. |
+| **🧩 Prompt templates** | Read-only list of the templates from `config.yaml`, with the `{default_prompt}` placeholder expanded so you see exactly what the model gets. |
+
+Everything the buttons change is the same data the slash commands change, so you can mix
+both freely; `/vox` in a chat always shows the current state.
+
+### Setup
+
+1. Create a bot with [@BotFather](https://t.me/BotFather) (`/newbot`) and copy the token.
+2. Find your own numeric user id, e.g. via [@userinfobot](https://t.me/userinfobot).
+3. Add both to `config.yaml` and restart the bot:
+
+   ```yaml
+   control_bot:
+     token: "123456789:AAExampleTokenFromBotFather"
+     owner_id: 123456789
+   ```
+
+4. Open your new bot in Telegram and send `/menu` (or `/start`, `/chats`, `/status`).
+
+The bot's session is stored as `session/control_bot.session` (gitignored). A wrong token
+only logs an error — the userbot keeps transcribing without the menu.
+
+### Security
+
+- The control bot is **locked to a single user id**: it only reacts in the private chat with
+  the owner. Messages from anyone else are never answered, only logged with the sender's id
+  (which is also the easiest way to find your own id: message the bot once and read the log).
+- Without `owner_id` the bot **refuses to start**, so it can never be left open by accident.
+- Destructive actions (deleting a chat) always go through an explicit confirm screen.
+- It never touches your Telegram account: chat lookups for *Add chat* go through the userbot,
+  everything else is a `chats.json` edit.
 
 ---
 
@@ -372,9 +541,19 @@ voxscribe/
 ├── src/
 │   ├── handlers.py         # command + voice handlers
 │   ├── transcription.py    # transcription & rephrasing logic
-│   ├── helpers.py          # config loading, message utils
-│   └── logging.py          # central logging setup
-├── session/                # Telegram session files (gitignored)
+│   ├── prompts.py          # prompt templates + per-chat prompt resolution
+│   ├── helpers.py          # config loading, chats.json store, message utils
+│   ├── logging.py          # central logging setup
+│   └── control_bot/        # optional BotFather control bot (menu UI)
+│       ├── service.py      #   client factory + slash-command menu
+│       ├── handlers.py     #   owner-only Pyrogram handlers
+│       ├── router.py       #   callback data -> screen + config change
+│       ├── keyboards.py    #   inline keyboards (callback-data scheme)
+│       ├── views.py        #   screen texts (HTML)
+│       ├── chats.py        #   recent dialogs / id lookup via the userbot
+│       └── state.py        #   pending multi-step flows
+├── tests/                  # unit tests (python -m pytest)
+├── session/                # Telegram + control-bot session files (gitignored)
 └── logs/                   # daily rotating logs (gitignored)
 ```
 
@@ -400,7 +579,9 @@ your private chats) and written atomically, with a `.json.backup` kept alongside
         "delete_outgoing_voice": 0,// delete outgoing after text     (/delout)
         "rephrase_prompt": "",     // legacy/global custom prompt
         "rephrase_prompt_in": "",  // custom prompt, incoming         (/setprompt_in)
-        "rephrase_prompt_out": ""  // custom prompt, outgoing         (/setprompt_out)
+        "rephrase_prompt_out": "", // custom prompt, outgoing         (/setprompt_out)
+        "rephrase_template_in": "",        // key of a prompts.templates entry (control bot)
+        "rephrase_template_out": "summary" // "" = none; a custom prompt above wins
     },
     "44455566": {                  // partial entries are fine — missing
         "transcription": 1         // keys fall back to the defaults
@@ -408,7 +589,8 @@ your private chats) and written atomically, with a `.json.backup` kept alongside
 }
 ```
 
-- Values are `1` (on) / `0` (off); prompt fields are strings (empty = use the global prompt).
+- Values are `1` (on) / `0` (off); prompt fields are strings (empty = use the global prompt),
+  template fields hold a template key from `config.yaml` (empty = none).
 - **Missing keys fall back to defaults**, so a minimal `{ "transcription": 1 }` entry is valid.
 - A chat with **no entry at all** uses `transcription_enabled_new_chats` to decide whether it
   starts ON or OFF (see the **Configuration** section).
