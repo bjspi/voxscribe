@@ -57,19 +57,38 @@ async def resolve_chat_ref(userbot: Client, raw_value: str) -> ChatRef:
     return ChatRef(chat_id=int(chat.id), chat_name=chat_display_name(chat))
 
 
+def _dialog_activity(dialog: Any) -> float:
+    """Return the dialog's last-activity time as a POSIX timestamp (oldest when unknown).
+
+    A numeric key sidesteps comparing Pyrogram's timezone-aware message dates
+    with naive fallbacks, which would raise ``TypeError`` while sorting.
+    """
+    date = getattr(getattr(dialog, "top_message", None), "date", None)
+    if isinstance(date, datetime):
+        try:
+            return date.timestamp()
+        except (OverflowError, OSError, ValueError):
+            return float("-inf")
+    return float("-inf")
+
+
 async def _collect_recent_dialogs(userbot: Client, limit: int) -> list[Any]:
-    """Collect the most recently active dialogs (main + archive), newest first."""
+    """Collect the most recently active dialogs (main + archive), newest first.
+
+    Telegram already returns dialogs newest-first, so each list is only read up
+    to ``limit`` entries; large accounts are never enumerated completely.
+    """
     collected: list[Any] = []
     seen: set[int] = set()
 
     for chat_list in (0, 1):
         try:
-            dialogs: Any = userbot.get_dialogs(chat_list=chat_list)
+            dialogs: Any = userbot.get_dialogs(limit=limit, chat_list=chat_list)
         except TypeError:
             # Older Pyrogram builds have no chat_list argument (main list only).
             if chat_list:
                 break
-            dialogs = userbot.get_dialogs()
+            dialogs = userbot.get_dialogs(limit=limit)
 
         if inspect.isasyncgen(dialogs):
             async for dialog in dialogs:
@@ -84,10 +103,7 @@ async def _collect_recent_dialogs(userbot: Client, limit: int) -> list[Any]:
                     seen.add(chat_id)
                     collected.append(dialog)
 
-    collected.sort(
-        key=lambda dialog: getattr(getattr(dialog, "top_message", None), "date", None) or datetime.min,
-        reverse=True,
-    )
+    collected.sort(key=_dialog_activity, reverse=True)
     return collected[:limit]
 
 

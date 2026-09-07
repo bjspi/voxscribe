@@ -12,8 +12,10 @@ from src.control_bot.common import (
     DIRECTION_LABELS,
     chat_label,
     direction_of,
+    fit_message,
     is_enabled,
     rephrasing_on,
+    short,
     state_icon,
     uses_markdown,
 )
@@ -24,6 +26,9 @@ from src.prompts import PromptTemplate, ResolvedPrompt
 MAX_PROMPT_DISPLAY_LENGTH = 3500
 PREVIEW_LENGTH = 140
 OVERVIEW_CHAT_LIMIT = 30
+# Templates shown in the list screen / picker keyboard (Telegram allows at
+# most 100 buttons per keyboard; keep screens readable well below that).
+MAX_LISTED_TEMPLATES = 40
 
 MAIN_MENU_TEXT = (
     "🎛 <b>Voice Transcriber — Control</b>\n\n"
@@ -110,7 +115,7 @@ def render_overview_text(
             )
         if len(chats) > OVERVIEW_CHAT_LIMIT:
             lines.append(f"… and {len(chats) - OVERVIEW_CHAT_LIMIT} more")
-    return "\n".join(lines)
+    return fit_message("\n".join(lines))
 
 
 def render_chats_text(count: int, page: int, pages: int) -> str:
@@ -159,8 +164,8 @@ def render_prompts_text(
     """Build the per-chat prompt screen with a preview per direction."""
     return (
         f"{_heading(chat_id, chat_config, '🧩')}\n\n"
-        f"📥 <b>Incoming — {escape(prompt_in.label)}</b>\n<i>{_preview(prompt_in.text)}</i>\n\n"
-        f"📤 <b>Outgoing — {escape(prompt_out.label)}</b>\n<i>{_preview(prompt_out.text)}</i>\n\n"
+        f"📥 <b>Incoming — {escape(short(prompt_in.label))}</b>\n<i>{_preview(prompt_in.text)}</i>\n\n"
+        f"📤 <b>Outgoing — {escape(short(prompt_out.label))}</b>\n<i>{_preview(prompt_out.text)}</i>\n\n"
         "Pick a direction to choose a template, the global default, or type your own prompt."
     )
 
@@ -205,11 +210,13 @@ def render_templates_text(templates: list[PromptTemplate]) -> str:
             "<code>config.yaml</code> (key, name, prompt)."
         )
     lines = [f"🧩 <b>Prompt templates</b> ({len(templates)})", ""]
-    for template in templates:
+    for template in templates[:MAX_LISTED_TEMPLATES]:
         lines.append(f"• <b>{escape(template.name)}</b> <code>{escape(template.key)}</code>")
         lines.append(f"  <i>{_preview(template.prompt, 100)}</i>")
+    if len(templates) > MAX_LISTED_TEMPLATES:
+        lines.append(f"… and {len(templates) - MAX_LISTED_TEMPLATES} more")
     lines += ["", "Tap a template to read its full text. Edit them in <code>config.yaml</code>."]
-    return "\n".join(lines)
+    return fit_message("\n".join(lines))
 
 
 def render_template_detail_text(template: PromptTemplate, default_prompt: str) -> str:

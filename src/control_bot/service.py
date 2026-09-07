@@ -57,7 +57,12 @@ def create_control_bot(userbot: Client, api_id: int, api_hash: str, session_dir:
         )
         return None
 
-    bot = Client(str(session_dir / "control_bot"), api_id=api_id, api_hash=api_hash, bot_token=token)
+    # Pyrogram reuses an authorized session file without re-checking the token,
+    # so key the session by the bot id (the part before ":" in the token): a
+    # replaced token then gets a fresh session instead of silently keeping the
+    # old bot alive.
+    bot_id = token.split(":", 1)[0].strip() or "bot"
+    bot = Client(str(session_dir / f"control_bot_{bot_id}"), api_id=api_id, api_hash=api_hash, bot_token=token)
     bot.set_parse_mode(ParseMode.HTML)
     register_control_handlers(bot, ControlRouter(userbot), owner_id)
     logger.info("Control bot configured for owner %s", owner_id)

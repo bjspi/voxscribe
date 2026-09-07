@@ -17,7 +17,7 @@ from src.helpers import (
     send_and_delete_message,
 )
 from src.logging import get_logger
-from src.prompts import resolve_rephrase_prompt
+from src.prompts import MIN_PROMPT_LENGTH, resolve_rephrase_prompt
 from src.transcription import transcribe_voice
 
 logger = get_logger(__name__)
@@ -211,6 +211,61 @@ async def show_config(client: Client, message: Message) -> None:
     await send_and_delete_message(client, message, f"<pre>{config_text}</pre>", 15)
 
 
+# Telegram messages are capped at 4096 characters; two full prompts plus
+# markup must fit, so each prompt gets roughly half of the budget.
+PROMPT_DISPLAY_LIMIT = 1800
+
+
+def _clip_prompt(text: str, limit: int = PROMPT_DISPLAY_LIMIT) -> str:
+    """Escape a prompt for HTML output and cut it so two of them fit in one message."""
+    if len(text) > limit:
+        return escape(text[:limit].rstrip()) + "\n… (truncated)"
+    return escape(text)
+
+
+async def _store_custom_prompt(client: Client, message: Message, directions: tuple[str, ...], label: str) -> None:
+    """Store (or clear) the custom rephrasing prompt for the given directions.
+
+    An empty argument resets to the default. A non-empty prompt must have at
+    least ``MIN_PROMPT_LENGTH`` characters, because shorter ones would be
+    ignored at runtime while silently dropping a chosen template.
+
+    Args:
+        client: The Pyrogram client instance that received the command.
+        message: The command message; its argument is the new prompt.
+        directions: ``("in",)``, ``("out",)`` or ``("in", "out")``.
+        label: Human wording for the affected directions, used in replies.
+    """
+    chat_info = get_chat_info(message.chat)
+    new_prompt = _command_argument(message).strip()
+    if new_prompt and len(new_prompt) < MIN_PROMPT_LENGTH:
+        await send_and_delete_message(
+            client,
+            message,
+            f"<pre>The prompt must have at least {MIN_PROMPT_LENGTH} characters (or be empty to reset).</pre>",
+            5,
+        )
+        return
+
+    chat_id = _chat_id(message)
+    config = _ensure_chat_settings(message)
+    for direction in directions:
+        config[chat_id][f"rephrase_prompt_{direction}"] = new_prompt
+        # A typed prompt replaces any template chosen through the control bot.
+        config[chat_id][f"rephrase_template_{direction}"] = ""
+    if not save_chat_settings(config):
+        await send_and_delete_message(client, message, "<pre>Could not save the prompt.</pre>", 5)
+        return
+
+    if new_prompt:
+        status_text = f"Custom prompt set for {label} messages."
+        logger.info(f"Custom prompt set for {label} messages in {chat_info}")
+    else:
+        status_text = f"Rephrasing prompt for {label} messages reset to default."
+        logger.info(f"Prompt for {label} messages reset to default in {chat_info}")
+    await send_and_delete_message(client, message, f"<pre>{status_text}</pre>", 3)
+
+
 async def show_prompt(client: Client, message: Message) -> None:
     """Show the current incoming and outgoing rephrasing prompts.
 
@@ -229,11 +284,11 @@ async def show_prompt(client: Client, message: Message) -> None:
     prompt_text = "<pre>Current Prompts:</pre>\n"
     prompt_text += (
         f"<blockquote expandable><b>Incoming ({escape(prompt_in.label)}):</b>\n"
-        f"{escape(prompt_in.text)}</blockquote>\n"
+        f"{_clip_prompt(prompt_in.text)}</blockquote>\n"
     )
     prompt_text += (
         f"<blockquote expandable><b>Outgoing ({escape(prompt_out.label)}):</b>\n"
-        f"{escape(prompt_out.text)}</blockquote>"
+        f"{_clip_prompt(prompt_out.text)}</blockquote>"
     )
 
     await send_and_delete_message(client, message, prompt_text, 15)
@@ -258,10 +313,10 @@ async def show_prompts(client: Client, message: Message) -> None:
         f"<pre>Prompts Overview:\n"
         f"─────────────────────────\n"
         f"IN  [{escape(prompt_in.label.upper())}]:\n"
-        f"{escape(prompt_in.text)}\n"
+        f"{_clip_prompt(prompt_in.text)}\n"
         f"─────────────────────────\n"
         f"OUT [{escape(prompt_out.label.upper())}]:\n"
-        f"{escape(prompt_out.text)}</pre>"
+        f"{_clip_prompt(prompt_out.text)}</pre>"
     )
 
     await send_and_delete_message(client, message, prompts_text, 15)
@@ -274,28 +329,7 @@ async def set_prompt(client: Client, message: Message) -> None:
         client: The Pyrogram client instance that received the command.
         message: The message that triggered the command.
     """
-    chat_info = get_chat_info(message.chat)
-    logger.info(f"Setting prompts for {chat_info}")
-    chat_id = _chat_id(message)
-    config = _ensure_chat_settings(message)
-
-    new_prompt = _command_argument(message)
-    config[chat_id]["rephrase_prompt_in"] = new_prompt
-    config[chat_id]["rephrase_prompt_out"] = new_prompt
-    # A typed prompt replaces any template chosen through the control bot.
-    config[chat_id]["rephrase_template_in"] = ""
-    config[chat_id]["rephrase_template_out"] = ""
-    # Save the updated config
-    save_chat_settings(config)
-
-    if new_prompt:
-        status_text = "Custom prompts set for both incoming and outgoing messages."
-        logger.info(f"Custom prompts set for {chat_info}")
-    else:
-        status_text = "Rephrasing prompts reset to default."
-        logger.info(f"Prompts reset to default for {chat_info}")
-
-    await send_and_delete_message(client, message, f"<pre>{status_text}</pre>", 3)
+    await _store_custom_prompt(client, message, ("in", "out"), "incoming and outgoing")
 
 
 async def set_prompt_in(client: Client, message: Message) -> None:
@@ -305,25 +339,7 @@ async def set_prompt_in(client: Client, message: Message) -> None:
         client: The Pyrogram client instance that received the command.
         message: The message that triggered the command.
     """
-    chat_info = get_chat_info(message.chat)
-    logger.info(f"Setting incoming prompt for {chat_info}")
-    chat_id = _chat_id(message)
-    config = _ensure_chat_settings(message)
-
-    new_prompt = _command_argument(message)
-    config[chat_id]["rephrase_prompt_in"] = new_prompt
-    config[chat_id]["rephrase_template_in"] = ""
-    # Save the updated config
-    save_chat_settings(config)
-
-    if new_prompt:
-        status_text = "Custom prompt set for incoming messages."
-        logger.info(f"Custom incoming prompt set for {chat_info}")
-    else:
-        status_text = "Incoming rephrasing prompt reset to default."
-        logger.info(f"Incoming prompt reset to default for {chat_info}")
-
-    await send_and_delete_message(client, message, f"<pre>{status_text}</pre>", 3)
+    await _store_custom_prompt(client, message, ("in",), "incoming")
 
 
 async def set_prompt_out(client: Client, message: Message) -> None:
@@ -333,26 +349,7 @@ async def set_prompt_out(client: Client, message: Message) -> None:
         client: The Pyrogram client instance that received the command.
         message: The message that triggered the command.
     """
-    chat_info = get_chat_info(message.chat)
-    logger.info(f"Setting outgoing prompt for {chat_info}")
-    chat_id = _chat_id(message)
-    config = _ensure_chat_settings(message)
-
-    new_prompt = _command_argument(message)
-    config[chat_id]["rephrase_prompt_out"] = new_prompt
-    config[chat_id]["rephrase_template_out"] = ""
-    # Save the updated config
-    save_chat_settings(config)
-
-    if new_prompt:
-        status_text = "Custom prompt set for outgoing messages."
-        logger.info(f"Custom outgoing prompt set for {chat_info}")
-    else:
-        status_text = "Outgoing rephrasing prompt reset to default."
-        logger.info(f"Outgoing prompt reset to default for {chat_info}")
-
-    await send_and_delete_message(client, message, f"<pre>{status_text}</pre>", 3)
-
+    await _store_custom_prompt(client, message, ("out",), "outgoing")
 
 async def toggle_transcription_mode(client: Client, message: Message) -> None:
     """Toggle transcription for incoming or outgoing voice messages.
@@ -481,7 +478,9 @@ async def handle_voice(client: Client, message: Message) -> None:
     chat_info = get_chat_info(message.chat)
     message_direction = "outgoing" if message.outgoing else "incoming"
     logger.info(f"Handling {message_direction} voice message for {chat_info}")
-    chat_config = get_chat_config(_chat_id(message))
+    # Make sure the chat has a stored entry: that is what the control bot lists,
+    # and what a deleted chat is recreated from on its next voice.
+    chat_config = _ensure_chat_settings(message)[_chat_id(message)]
 
     # Respect global chat toggle first.
     transcription_enabled_globally = bool(chat_config.get("transcription", 1))

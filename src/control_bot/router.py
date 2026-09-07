@@ -389,7 +389,7 @@ class ControlRouter:
     async def _cb_pick(self, user_id: int, args: list[str]) -> Screen | None:
         action = self.pending.get(user_id)
         index = int(args[0])
-        if action is None or action.kind != KIND_ADD_CHAT or index >= len(action.recent):
+        if action is None or action.kind != KIND_ADD_CHAT or not 0 <= index < len(action.recent):
             return None
         return self._add_chat(user_id, action.recent[index])
 

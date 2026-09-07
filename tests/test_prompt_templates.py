@@ -37,6 +37,9 @@ class PromptTemplateLoadingTests(unittest.TestCase):
                     {"key": "no_prompt", "name": "Empty"},
                     {"key": "with|pipe", "prompt": "Pipes break callback data."},
                     {"key": "x" * 25, "prompt": "Too long for callback data."},
+                    {"key": "😀" * 5, "prompt": "Multibyte keys blow the 64-byte limit."},
+                    {"key": "spa ce", "prompt": "No spaces either."},
+                    {"key": "blank_name", "name": "   ", "prompt": "Whitespace name falls back to the key."},
                     "not a mapping",
                     {"key": "nameless", "prompt": "Name falls back to the key."},
                 ]
@@ -44,9 +47,10 @@ class PromptTemplateLoadingTests(unittest.TestCase):
         }
         with self.assertLogs("src.prompts", level="WARNING"):
             templates = load_prompt_templates(config)
-        self.assertEqual([t.key for t in templates], ["ok", "nameless"])
+        self.assertEqual([t.key for t in templates], ["ok", "blank_name", "nameless"])
         self.assertEqual(templates[0].name, "Fine")
-        self.assertEqual(templates[1].name, "nameless")
+        self.assertEqual(templates[1].name, "blank_name")
+        self.assertEqual(templates[2].name, "nameless")
 
     def test_placeholder_expands_to_default_prompt(self) -> None:
         template = PromptTemplate(key="s", name="S", prompt="{default_prompt}\n\nAdd a TL;DR.")

@@ -438,12 +438,18 @@ async def main() -> None:
     if control is not None:
         try:
             await control.start()
-            await configure_bot_commands(control)
-            logger.info("Control bot started")
         except Exception:
             # A bad token must not take the userbot down: continue without the menu.
             logger.exception("Control bot failed to start; continuing without it")
             control = None
+        else:
+            logger.info("Control bot started")
+            # The command menu is cosmetic: a failure here must neither stop the
+            # running bot nor drop the reference that shuts it down later.
+            try:
+                await configure_bot_commands(control)
+            except Exception:
+                logger.warning("Control bot command menu could not be registered", exc_info=True)
     idle_task = asyncio.create_task(idle(), name="pyrogram-idle")
     watchdog_task = asyncio.create_task(connection_watchdog(app), name="telegram-connection-watchdog")
     healthcheck_failed = False
