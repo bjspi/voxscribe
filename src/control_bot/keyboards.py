@@ -37,11 +37,15 @@ from src.control_bot.common import (
     direction_of,
     is_enabled,
     rephrasing_on,
+    short,
     state_icon,
     uses_markdown,
 )
 from src.helpers import ChatConfig
 from src.prompts import PromptTemplate, ResolvedPrompt
+
+# Telegram allows at most 100 buttons per keyboard; leave room for the fixed rows.
+MAX_PICKER_TEMPLATES = 40
 
 
 def _mark(active: bool, label: str) -> str:
@@ -144,8 +148,8 @@ def prompts_keyboard(chat_id: str, prompt_in: ResolvedPrompt, prompt_out: Resolv
     cid = chat_id
     return InlineKeyboardMarkup(
         [
-            [_btn(f"📥 Incoming: {prompt_in.label}", f"pp|{cid}|in")],
-            [_btn(f"📤 Outgoing: {prompt_out.label}", f"pp|{cid}|out")],
+            [_btn(f"📥 Incoming: {short(prompt_in.label)}", f"pp|{cid}|in")],
+            [_btn(f"📤 Outgoing: {short(prompt_out.label)}", f"pp|{cid}|out")],
             [_btn("🔁 Set both directions", f"pp|{cid}|both")],
             [_btn("👁 View incoming", f"pv|{cid}|in"), _btn("👁 View outgoing", f"pv|{cid}|out")],
             [_btn("⬅️ Back", f"c|{cid}")],
@@ -181,11 +185,11 @@ def prompt_picker_keyboard(
             )
         ]
     ]
-    for template in templates:
+    for template in templates[:MAX_PICKER_TEMPLATES]:
         rows.append(
             [
                 _btn(
-                    _mark(active(lambda d, key=template.key: template_key(d) == key), template.name),
+                    _mark(active(lambda d, key=template.key: template_key(d) == key), short(template.name)),
                     f"pt|{cid}|{direction}|{template.key}",
                 )
             ]
@@ -207,7 +211,9 @@ def prompt_view_keyboard(chat_id: str, direction: str) -> InlineKeyboardMarkup:
 
 def templates_keyboard(templates: list[PromptTemplate]) -> InlineKeyboardMarkup:
     """Build the global templates list (read-only; edit them in config.yaml)."""
-    rows: list[list[InlineKeyboardButton]] = [[_btn(template.name, f"tpl|{template.key}")] for template in templates]
+    rows: list[list[InlineKeyboardButton]] = [
+        [_btn(short(template.name), f"tpl|{template.key}")] for template in templates[:MAX_PICKER_TEMPLATES]
+    ]
     if not rows:
         rows.append([_btn("No templates configured", "nop")])
     rows.append([_btn("⬅️ Back", "home")])
@@ -227,7 +233,7 @@ def recent_chats_keyboard(recent: list[ChatRef]) -> InlineKeyboardMarkup:
     pending action's stored list.
     """
     rows: list[list[InlineKeyboardButton]] = [
-        [_btn(f"{index + 1}. {chat.label}", f"pick|{index}")] for index, chat in enumerate(recent)
+        [_btn(f"{index + 1}. {short(chat.label)}", f"pick|{index}")] for index, chat in enumerate(recent)
     ]
     rows.append([_btn("✍️ Type id / @username", "typ")])
     rows.append([_btn("✖️ Cancel", "cancel")])

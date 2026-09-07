@@ -1,9 +1,15 @@
-# 🎙️ voxscribe — Telegram Voice Transcription Bot
+<p align="center">
+  <img src="assets/icon.png" alt="voxscribe logo" width="180">
+</p>
 
-![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
-![Telegram](https://img.shields.io/badge/telegram-userbot-26A5E4)
-![Powered by Groq](https://img.shields.io/badge/powered%20by-Groq%20%7C%20OpenAI-orange)
+<h1 align="center">🎙️ voxscribe — Telegram Voice Transcription Bot</h1>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+  <img src="https://img.shields.io/badge/telegram-userbot-26A5E4" alt="Telegram">
+  <img src="https://img.shields.io/badge/powered%20by-Groq%20%7C%20OpenAI-orange" alt="Powered by Groq">
+</p>
 
 > Turn every voice message into clean, readable text — automatically, on your own Telegram account, in **any** chat.
 
@@ -306,9 +312,9 @@ them invisible to your partner.
 | `/delout` | Toggle deletion of **outgoing** voices after transcription |
 | `/prompt` | Show the current rephrasing prompt |
 | `/prompts` | Show prompts overview (custom / default) |
-| `/setprompt` | Set a custom rephrasing prompt |
-| `/setprompt_in` | Set a custom rephrasing prompt for incoming messages |
-| `/setprompt_out` | Set a custom rephrasing prompt for outgoing messages |
+| `/setprompt` | Set a custom rephrasing prompt for both directions (at least 10 characters; empty resets to default) |
+| `/setprompt_in` | Set a custom rephrasing prompt for incoming messages (replaces a chosen template) |
+| `/setprompt_out` | Set a custom rephrasing prompt for outgoing messages (replaces a chosen template) |
 
 ### 📄 Markdown attachments
 
@@ -458,8 +464,8 @@ both freely; `/vox` in a chat always shows the current state.
 
 4. Open your new bot in Telegram and send `/menu` (or `/start`, `/chats`, `/status`).
 
-The bot's session is stored as `session/control_bot.session` (gitignored). A wrong token
-only logs an error — the userbot keeps transcribing without the menu.
+The bot's session is stored as `session/control_bot_<bot-id>.session` (gitignored; a new
+token gets a new session file). A wrong token only logs an error — the userbot keeps transcribing without the menu.
 
 ### Security
 
@@ -535,6 +541,7 @@ Tune the watchdog in `config.yaml` under `recovery:` (interval, timeout, max fai
 voxscribe/
 ├── bot.py                  # Entry point — python bot.py
 ├── requirements.txt
+├── assets/                 # logo used in this README
 ├── config.example.yaml     # template (committed)
 ├── config.yaml             # your secrets (gitignored)
 ├── chats.json              # per-chat settings (gitignored, auto-created)
@@ -562,8 +569,10 @@ voxscribe/
 ## 🗃️ Per-chat settings (`chats.json`)
 
 Every chat the bot interacts with gets its own entry in `chats.json`, keyed by the numeric
-**Telegram chat ID**. The file is created and updated automatically whenever you run a command
-or a voice is transcribed — you normally never edit it by hand. It is **gitignored** (it maps
+**Telegram chat ID**. The file is created and updated automatically whenever you run a command,
+add a chat in the control bot, or a voice message arrives — you normally never edit it by
+hand. Deleting a chat in the control bot only removes its settings; the next voice in that chat
+recreates the entry with the defaults. It is **gitignored** (it maps
 your private chats) and written atomically, with a `.json.backup` kept alongside it.
 
 ```jsonc

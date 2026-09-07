@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -11,7 +12,8 @@ import yaml
 
 from src.control_bot.keyboards import chat_detail_keyboard, prompt_picker_keyboard
 from src.control_bot.router import ControlRouter
-from src.control_bot.service import load_control_bot_settings
+from src.control_bot.service import create_control_bot, load_control_bot_settings
+from src.control_bot.views import render_overview_text
 from src.helpers import get_chat_config
 from src.prompts import PromptTemplate
 
@@ -36,6 +38,7 @@ class FakeUserbot:
             555: SimpleNamespace(id=555, title=None, first_name="Alice", last_name="A.", username="alice"),
         }
         self.get_chat = AsyncMock(side_effect=self._get_chat)
+        self.dialog_limits: list[int] = []
 
     async def _get_chat(self, identifier):
         if identifier == "@alice":
@@ -44,11 +47,19 @@ class FakeUserbot:
             return self.chats[identifier]
         raise ValueError("unknown chat")
 
-    def get_dialogs(self, chat_list=0):
+    def get_dialogs(self, limit=0, chat_list=0):
+        self.dialog_limits.append(limit)
+
         async def generator():
             if chat_list == 0:
-                for chat in self.chats.values():
-                    yield SimpleNamespace(chat=chat, top_message=SimpleNamespace(date=None))
+                # Mixed activity data: one timezone-aware date, one dialog without
+                # a top message. Sorting must cope with both.
+                dialogs = [
+                    SimpleNamespace(chat=self.chats[555], top_message=None),
+                    SimpleNamespace(chat=self.chats[-100123], top_message=SimpleNamespace(date=datetime.now(UTC))),
+                ]
+                for dialog in dialogs:
+                    yield dialog
 
         return generator()
 
@@ -173,7 +184,12 @@ class ControlRouterTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_add_chat_by_pick_and_by_typing(self) -> None:
         text, markup = await self.route("cadd")
+        # Newest activity first; dialogs without a top message go last; lookups are bounded.
         self.assertEqual(buttons(markup)["1. Dev Group"], "pick|0")
+        self.assertEqual(buttons(markup)["2. Alice A."], "pick|1")
+        self.assertTrue(all(limit > 0 for limit in self.userbot.dialog_limits))
+        self.assertIsNone(await self.route("pick|-1"))
+        self.assertIsNone(await self.route("pick|7"))
         text, markup = await self.route("pick|0")
         self.assertIn("Dev Group", text)
         stored = self.stored("-100123")
@@ -224,6 +240,22 @@ class ControlRouterTests(unittest.IsolatedAsyncioTestCase):
 
     def test_control_bot_settings_are_read_from_config(self) -> None:
         self.assertEqual(load_control_bot_settings(), ("123:abc", 42))
+
+    def test_session_file_is_keyed_by_bot_id(self) -> None:
+        with patch("src.control_bot.service.Client") as client_cls, patch("src.control_bot.service.register_control_handlers"):
+            create_control_bot(None, 1, "hash", Path("sessions"))
+        self.assertEqual(client_cls.call_args.args[0], str(Path("sessions") / "control_bot_123"))
+        self.assertEqual(client_cls.call_args.kwargs["bot_token"], "123:abc")
+
+    def test_long_names_and_many_templates_stay_within_limits(self) -> None:
+        many = [PromptTemplate(key=f"t{i}", name="n" * 300, prompt="Long enough prompt.") for i in range(80)]
+        chat_config = get_chat_config("1")
+        markup = prompt_picker_keyboard("1", "in", chat_config, many)
+        self.assertLessEqual(sum(len(row) for row in markup.inline_keyboard), 100)
+        self.assertIn("…", markup.inline_keyboard[1][0].text)
+        chats = [(str(i), {"chatname": "x" * 200}) for i in range(60)]
+        text = render_overview_text(chats, {}, many, True)
+        self.assertLessEqual(len(text), 4096)
 
 
 if __name__ == "__main__":

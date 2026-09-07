@@ -18,6 +18,7 @@ global default prompt. That keeps "default rules + something extra" templates
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -30,8 +31,12 @@ DEFAULT_PROMPT_PLACEHOLDER = "{default_prompt}"
 # Prompts shorter than this are treated as "not set" (matches the legacy rule
 # used for /setprompt).
 MIN_PROMPT_LENGTH = 10
-# Template keys travel inside Telegram callback data (64-byte limit).
+# Template keys travel inside Telegram callback data (64 *bytes*), so they are
+# restricted to short ASCII: ``pt|<chat id>|both|<key>`` stays below the limit.
 MAX_TEMPLATE_KEY_LENGTH = 24
+TEMPLATE_KEY_PATTERN = re.compile(rf"[A-Za-z0-9_-]{{1,{MAX_TEMPLATE_KEY_LENGTH}}}")
+# Button labels; Telegram truncates longer ones, so keep names readable.
+MAX_TEMPLATE_NAME_LENGTH = 40
 
 Direction = Literal["in", "out"]
 PromptSource = Literal["default", "template", "custom"]
@@ -121,18 +126,21 @@ def _parse_template(raw: object, index: int) -> PromptTemplate | None:
         logger.warning("Ignoring prompt template #%s: expected a mapping with key/name/prompt", index + 1)
         return None
     key = str(raw.get("key") or "").strip()
-    name = str(raw.get("name") or key).strip()
+    name = str(raw.get("name") or "").strip() or key
     prompt = str(raw.get("prompt") or "").strip()
     if not key or not prompt:
         logger.warning("Ignoring prompt template #%s: 'key' and 'prompt' are required", index + 1)
         return None
-    if "|" in key or len(key) > MAX_TEMPLATE_KEY_LENGTH:
+    if not TEMPLATE_KEY_PATTERN.fullmatch(key):
         logger.warning(
-            "Ignoring prompt template %r: keys must be at most %s characters and must not contain '|'",
+            "Ignoring prompt template %r: keys must be 1-%s ASCII letters, digits, '_' or '-' "
+            "(they travel inside Telegram callback data)",
             key,
             MAX_TEMPLATE_KEY_LENGTH,
         )
         return None
+    if len(name) > MAX_TEMPLATE_NAME_LENGTH:
+        name = name[: MAX_TEMPLATE_NAME_LENGTH - 1].rstrip() + "…"
     return PromptTemplate(key=key, name=name, prompt=prompt)
 
 

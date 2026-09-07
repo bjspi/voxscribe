@@ -68,9 +68,14 @@ def register_control_handlers(bot: Client, router: ControlRouter, owner_id: int)
     async def on_callback(_: Client, callback_query: CallbackQuery) -> None:
         """Route an inline-button tap to the matching screen or config change."""
         data = str(callback_query.data or "")
+        # Acknowledge first: routing may take a while (e.g. fetching dialogs)
+        # and Telegram drops unanswered callback queries after a short timeout.
+        try:
+            await callback_query.answer()
+        except Exception:
+            logger.debug("Control bot: could not acknowledge callback %r.", data, exc_info=True)
         try:
             screen = await router.route(data, callback_query.from_user.id)
-            await callback_query.answer()
             if screen is not None:
                 text, markup = screen
                 try:
@@ -81,9 +86,11 @@ def register_control_handlers(bot: Client, router: ControlRouter, owner_id: int)
         except Exception:
             logger.exception("Control bot: error handling callback %r.", data)
             try:
-                await callback_query.answer("Something went wrong.", show_alert=True)
+                message = callback_query.message
+                if message is not None:
+                    await message.reply_text("⚠️ Something went wrong. Send /menu to start over.")
             except Exception:
-                logger.debug("Control bot: could not answer callback after error.", exc_info=True)
+                logger.debug("Control bot: could not report the callback error.", exc_info=True)
 
     @bot.on_message(filters.text & owner)
     async def on_text(_: Client, message: Message) -> None:
