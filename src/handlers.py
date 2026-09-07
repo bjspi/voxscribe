@@ -82,6 +82,10 @@ def build_transcription_status_text(chat_config: ChatConfig) -> str:
     else:
         lines.append("(global off — per-direction settings paused)")
 
+    lines.append(f"{'Markdown':<9}{icon(chat_config.get('markdown_output', 0))}")
+    if chat_config.get("markdown_output", 0):
+        lines.append("(one .md file: original + rephrased)")
+
     return "\n".join(lines)
 
 
@@ -107,6 +111,7 @@ Available Commands:
 /tin         Toggle transcription for incoming voices.
 /tout        Toggle transcription for outgoing voices.
 /rephrase    Toggle rephrasing of transcriptions.
+/tmd [on|off] Markdown file: original + rephrased (default off).
 /delin       Toggle deletion of incoming voices.
 /delout      Toggle deletion of outgoing voices.
 /prompt      Show the current rephrasing prompt.
@@ -348,9 +353,31 @@ async def toggle_rephrasing(client: Client, message: Message) -> None:
     save_chat_settings(config)
 
     status = "enabled" if config[chat_id]["rephrasing"] == 1 else "disabled"
-    status_text = f"<pre>Rephrasing of transcriptions {status}.</pre>"
+    notice = "\nMarkdown output always includes both versions." if config[chat_id].get("markdown_output", 0) else ""
+    status_text = f"<pre>Rephrasing of text messages {status}.{notice}</pre>"
     logger.info(f"Rephrasing of transcriptions {status} in {chat_info}")
     await send_and_delete_message(client, message, status_text, 1.8)
+
+
+async def toggle_markdown_output(client: Client, message: Message) -> None:
+    """Toggle Markdown attachments for this chat, or explicitly set on/off."""
+    argument = _command_argument(message).strip().lower()
+    if argument not in {"", "on", "off"}:
+        await send_and_delete_message(client, message, "<pre>Usage: /tmd [on|off]</pre>", 5)
+        return
+
+    chat_id = _chat_id(message)
+    config = _ensure_chat_settings(message)
+    enabled = argument == "on" if argument else not config[chat_id].get("markdown_output", 0)
+    config[chat_id]["markdown_output"] = int(enabled)
+    if not save_chat_settings(config):
+        await send_and_delete_message(client, message, "<pre>Could not save Markdown output setting.</pre>", 5)
+        return
+
+    status = "enabled" if enabled else "disabled"
+    detail = " One .md file per voice with original + rephrased text." if enabled else " Sending text messages."
+    logger.info("Markdown output %s in %s", status, get_chat_info(message.chat))
+    await send_and_delete_message(client, message, f"<pre>Markdown output {status} for this chat.{detail}</pre>", 5)
 
 
 async def toggle_voice_delete(client: Client, message: Message) -> None:

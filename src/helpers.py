@@ -44,6 +44,7 @@ CONFIG_DEFAULTS: ChatConfig = {
     "transcription_in": 1,  # Transcribe incoming voice messages
     "transcription_out": 1,  # Transcribe outgoing voice messages
     "rephrasing": 1,  # Rephrase transcriptions for better readability
+    "markdown_output": 0,  # Send original + rephrased text in one Markdown file
     "delete_outgoing_voice": 0,  # Delete outgoing voice messages after transcription
     "delete_incoming_voice": 0,  # Delete incoming voice messages after transcription
     "rephrase_prompt_in": "",  # Custom rephrasing prompt for incoming messages (empty = use default)

@@ -22,6 +22,7 @@ from src.handlers import (
     show_prompt,
     show_prompts,
     show_status,
+    toggle_markdown_output,
     toggle_rephrasing,
     toggle_transcription_mode,
     toggle_voice_delete,
@@ -246,6 +247,12 @@ async def set_global_transcription_handler(client: Client, message: Message) -> 
 async def rephrase_handler(client: Client, message: Message) -> None:
     """Handle ``/rephrase``: toggle AI rephrasing of transcriptions."""
     await toggle_rephrasing(client, message)
+
+
+@app.on_message(filters.command("tmd") & _CMD_BASE)
+async def markdown_handler(client: Client, message: Message) -> None:
+    """Handle ``/tmd [on|off]``: choose Markdown files for this chat."""
+    await toggle_markdown_output(client, message)
 
 
 @app.on_message(filters.command(["delin", "delout"]) & _CMD_BASE)
