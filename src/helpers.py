@@ -49,6 +49,8 @@ CONFIG_DEFAULTS: ChatConfig = {
     "delete_incoming_voice": 0,  # Delete incoming voice messages after transcription
     "rephrase_prompt_in": "",  # Custom rephrasing prompt for incoming messages (empty = use default)
     "rephrase_prompt_out": "",  # Custom rephrasing prompt for outgoing messages (empty = use default)
+    "rephrase_template_in": "",  # Key of a prompts.templates entry for incoming messages (empty = none)
+    "rephrase_template_out": "",  # Key of a prompts.templates entry for outgoing messages (empty = none)
 }
 
 
@@ -312,7 +314,7 @@ def ensure_chat_config(chat_id: str, chatname: str = "") -> ChatSettings:
     return config
 
 
-def get_chat_config(chat_id: str) -> ChatConfig:
+def get_chat_config(chat_id: str, settings: ChatSettings | None = None) -> ChatConfig:
     """Get the configuration for a specific chat with defaults applied.
 
     This function retrieves the configuration for a specific chat, applying
@@ -320,14 +322,16 @@ def get_chat_config(chat_id: str) -> ChatConfig:
 
     Args:
         chat_id: The chat ID to get configuration for.
+        settings: Already-loaded chat settings; read from disk when omitted.
 
     Returns:
-        The chat-specific settings dictionary with runtime defaults filled in.
+        The chat-specific settings dictionary with runtime defaults filled in
+        (a copy — changes are not written back).
     """
     logger.info(f"Getting chat config for chat {chat_id}")
-    config = load_chat_settings()
+    config = load_chat_settings() if settings is None else settings
     is_new_chat = chat_id not in config
-    chat_config = config.get(chat_id, {})
+    chat_config = dict(config.get(chat_id, {}))
 
     # Apply defaults for any missing keys
     for key, val in CONFIG_DEFAULTS.items():
@@ -337,6 +341,51 @@ def get_chat_config(chat_id: str) -> ChatConfig:
 
     logger.info(f"Returning chat config with {len(chat_config)} settings for chat {chat_id}")
     return chat_config
+
+
+def list_chat_configs() -> ChatSettings:
+    """Return every stored chat entry with runtime defaults applied.
+
+    Returns:
+        A mapping of chat ID to its settings. Entries are copies; edit them
+        through :func:`update_chat_config` so they are persisted.
+    """
+    stored = load_chat_settings()
+    return {chat_id: get_chat_config(chat_id, stored) for chat_id in stored}
+
+
+def update_chat_config(chat_id: str, changes: ChatConfig, chatname: str = "") -> ChatConfig | None:
+    """Persist a set of setting changes for one chat, creating the entry if needed.
+
+    Args:
+        chat_id: The chat ID (JSON key) to update.
+        changes: Setting keys and their new values.
+        chatname: Optional display name stored when the chat is first seen.
+
+    Returns:
+        The chat's updated settings, or None when saving failed.
+    """
+    config = ensure_chat_config(chat_id, chatname)
+    config[chat_id].update(changes)
+    if not save_chat_settings(config):
+        return None
+    return config[chat_id]
+
+
+def delete_chat_config(chat_id: str) -> bool:
+    """Remove a chat entry from ``chats.json``.
+
+    Args:
+        chat_id: The chat ID (JSON key) to remove.
+
+    Returns:
+        True when the entry existed and the file was written, otherwise False.
+    """
+    config = load_chat_settings()
+    if chat_id not in config:
+        return False
+    del config[chat_id]
+    return save_chat_settings(config)
 
 
 def _is_scheduled_message(message: Message) -> bool:

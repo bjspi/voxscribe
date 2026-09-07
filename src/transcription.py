@@ -20,6 +20,7 @@ from pyrogram.types import Message
 
 from src.helpers import YamlConfig, get_chat_config, get_chat_info, get_config_value, load_bot_config
 from src.logging import get_logger
+from src.prompts import resolve_rephrase_prompt
 
 # Set up logging
 logger = get_logger(__name__)
@@ -686,17 +687,12 @@ async def transcribe_voice(client: Client, message: Message) -> None:
 
         # Markdown files always include both versions, independent of text mode.
         if markdown_output or chat_config.get("rephrasing", 1):
-            # Determine which prompt to use based on message direction
-            if message.outgoing:
-                # Use outgoing specific prompt if available, otherwise fall back to default
-                system_prompt = str(chat_config.get("rephrase_prompt_out") or current_config["rephrase_prompt"])
-            else:
-                # Use incoming specific prompt if available, otherwise fall back to default
-                system_prompt = str(chat_config.get("rephrase_prompt_in") or current_config["rephrase_prompt"])
-
-            # Only use the prompt if it's long enough (at least 10 characters)
-            if len(system_prompt) < 10:
-                system_prompt = current_config["rephrase_prompt"]
+            # Custom prompt > template > global default, per direction.
+            resolved_prompt = resolve_rephrase_prompt(
+                chat_config, "out" if message.outgoing else "in", current_config["rephrase_prompt"]
+            )
+            system_prompt = resolved_prompt.text
+            logger.info(f"Rephrasing prompt for {chat_info}: {resolved_prompt.label}")
 
             try:
                 text, provider, model = await asyncio.to_thread(

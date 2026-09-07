@@ -6,6 +6,20 @@ telegram:
   phone_nr: ""
   account: ""
 
+# Control bot (optional)
+# A separate BotFather bot with an inline-button menu to see and change every
+# per-chat setting from one place: list, add, pause, delete chats; direction,
+# output mode (inline text / Markdown file), rephrasing, voice deletion and the
+# rephrasing prompt (template, global default or custom text). Leave the token
+# empty to disable it. Create the bot with @BotFather to get the token.
+control_bot:
+  token: ""
+  # Your own numeric Telegram user id (= the id of your private chat with the
+  # bot). It is the ONLY id allowed to talk to the control bot; the bot refuses
+  # to start without it. Find it via @userinfobot, or start the control bot and
+  # send it any message: the log then shows your id as "non-owner user id".
+  owner_id: 0
+
 # API Provider Configuration
 # Options: "GROQ" or "OPENAI"
 api:
@@ -132,3 +146,48 @@ prompts:
     - You receive the raw transcription as text input.
     - Return only the revised version, without any preface or closing remarks, in the same
       language and style as the original.
+
+  # Rephrasing prompt templates, selectable per chat and direction (incoming /
+  # outgoing) through the control bot. Each entry needs a short `key` (used
+  # internally, max 24 characters, no "|"), a display `name` and the `prompt`.
+  # The placeholder {default_prompt} expands to the `rephrase` prompt above, so
+  # "default rules + something extra" templates stay in sync with your tuned
+  # default. Chats store only the key, so editing a template here changes the
+  # behaviour of every chat using it immediately.
+  # Remove this list to use the built-in templates shown below; set it to an
+  # empty list (`templates: []`) to offer no templates at all.
+  templates:
+    - key: summary
+      name: "Clean-up + summary"
+      prompt: |
+        {default_prompt}
+
+        **Additional rule — summary**
+        Start your answer with a one- or two-sentence summary of the message,
+        prefixed with "TL;DR:", followed by a blank line and then the revised text.
+        The summary must be in the same language as the message.
+    - key: summary_only
+      name: "Summary only"
+      prompt: |
+        You summarize the transcription of a voice message. Return only a concise
+        summary in the language of the input: at most five short bullet points
+        covering the key statements, questions and requested actions. Keep names,
+        numbers, dates and decisions exactly as spoken. Do not add opinions,
+        interpretations or a preface.
+    - key: bullets
+      name: "Bullet points"
+      prompt: |
+        You restructure the transcription of a voice message into clear bullet
+        points in the language of the input. Keep the speaker's wording and tone;
+        only remove filler words and repetitions. Group related statements, put
+        questions and to-dos in their own bullets, and keep all names, numbers and
+        dates unchanged. Return only the bullet list, without any preface or
+        closing remarks.
+    - key: verbatim
+      name: "Verbatim (minimal edits)"
+      prompt: |
+        You lightly clean up the transcription of a voice message. Only fix
+        punctuation and capitalization and remove obvious filler words such as
+        "uh" or "um". Do not reorder, merge, shorten or rephrase anything else;
+        keep the wording exactly as spoken, in the original language. Return only
+        the cleaned text.

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from html import escape
+
 from pyrogram import Client
 from pyrogram.types import Message
 
@@ -15,6 +17,7 @@ from src.helpers import (
     send_and_delete_message,
 )
 from src.logging import get_logger
+from src.prompts import resolve_rephrase_prompt
 from src.transcription import transcribe_voice
 
 logger = get_logger(__name__)
@@ -106,6 +109,7 @@ async def show_help(client: Client, message: Message) -> None:
 Available Commands:
 /helpv       Show this help message.
 /statusv     Show current transcription settings.
+/vox         Show ALL settings of this chat + the commands to change them.
 /ton         Enable transcription globally for this chat.
 /toff        Disable transcription globally for this chat.
 /tin         Toggle transcription for incoming voices.
@@ -140,6 +144,73 @@ async def show_status(client: Client, message: Message) -> None:
     await send_and_delete_message(client, message, f"<pre>{status_text}</pre>", 5)
 
 
+def build_chat_config_text(chat_id: str, chat_config: ChatConfig, default_prompt: str) -> str:
+    """Build the full per-chat settings panel shown by ``/vox``.
+
+    Lists every setting with its current value and the slash command that
+    changes it, so the whole configuration of a chat is visible in one place.
+
+    Args:
+        chat_id: The chat ID (JSON key) the settings belong to.
+        chat_config: The resolved per-chat configuration.
+        default_prompt: The global ``prompts.rephrase`` text (for prompt labels).
+
+    Returns:
+        A multi-line, column-aligned string intended for a ``<pre>`` block.
+    """
+
+    def icon(value: object) -> str:
+        return "✅ on " if value else "❌ off"
+
+    global_on = bool(chat_config.get("transcription", 1))
+    markdown = bool(chat_config.get("markdown_output", 0))
+    prompt_in = resolve_rephrase_prompt(chat_config, "in", default_prompt)
+    prompt_out = resolve_rephrase_prompt(chat_config, "out", default_prompt)
+    name = str(chat_config.get("chatname") or "").strip()
+    header = f"{name} ({chat_id})" if name else chat_id
+
+    rows: list[tuple[str, str, str]] = [
+        ("Transcription", icon(global_on), "/ton · /toff"),
+        ("  Incoming", icon(chat_config.get("transcription_in", 1)), "/tin"),
+        ("  Outgoing", icon(chat_config.get("transcription_out", 1)), "/tout"),
+        ("Output", "📄 Markdown file" if markdown else "💬 inline text", "/tmd on|off"),
+        ("Rephrasing", icon(chat_config.get("rephrasing", 1)), "/rephrase"),
+        ("Delete voice", "", ""),
+        ("  Incoming", icon(chat_config.get("delete_incoming_voice", 0)), "/delin"),
+        ("  Outgoing", icon(chat_config.get("delete_outgoing_voice", 0)), "/delout"),
+        ("Prompt in", prompt_in.label, "/setprompt_in"),
+        ("Prompt out", prompt_out.label, "/setprompt_out"),
+    ]
+    lines = ["🎙️ voxscribe — chat settings", escape(header), ""]
+    for label, value, command in rows:
+        lines.append(f"{label:<14}{escape(value):<18}{command}".rstrip())
+    notes = []
+    if not global_on:
+        notes.append("(transcription off — direction settings paused)")
+    if markdown:
+        notes.append("(Markdown files always contain original + rephrased)")
+    if notes:
+        lines += [""] + notes
+    lines += ["", "/prompts shows the full prompt texts."]
+    return "\n".join(lines)
+
+
+async def show_config(client: Client, message: Message) -> None:
+    """Show every setting of the current chat, with the command that changes it.
+
+    Args:
+        client: The Pyrogram client instance that received the command.
+        message: The message that triggered the command.
+    """
+    chat_info = get_chat_info(message.chat)
+    logger.info(f"Showing chat settings for {chat_info}")
+    chat_id = _chat_id(message)
+    chat_config = get_chat_config(chat_id)
+    default_prompt = str(get_bot_config_value(["prompts", "rephrase"], default="") or "")
+    config_text = build_chat_config_text(chat_id, chat_config, default_prompt)
+    await send_and_delete_message(client, message, f"<pre>{config_text}</pre>", 15)
+
+
 async def show_prompt(client: Client, message: Message) -> None:
     """Show the current incoming and outgoing rephrasing prompts.
 
@@ -152,12 +223,18 @@ async def show_prompt(client: Client, message: Message) -> None:
     chat_config = get_chat_config(_chat_id(message))
     # Load the default prompt dynamically each time
     default_prompt = str(get_bot_config_value(["prompts", "rephrase"], default="") or "")
-    prompt_in = str(chat_config.get("rephrase_prompt_in") or default_prompt)
-    prompt_out = str(chat_config.get("rephrase_prompt_out") or default_prompt)
+    prompt_in = resolve_rephrase_prompt(chat_config, "in", default_prompt)
+    prompt_out = resolve_rephrase_prompt(chat_config, "out", default_prompt)
 
-    prompt_text = "<pre>Current Prompts:</pre>\\n"
-    prompt_text += "<blockquote expandable><b>Incoming:</b>\\n" + prompt_in + "</blockquote>\\n"
-    prompt_text += "<blockquote expandable><b>Outgoing:</b>\\n" + prompt_out + "</blockquote>"
+    prompt_text = "<pre>Current Prompts:</pre>\n"
+    prompt_text += (
+        f"<blockquote expandable><b>Incoming ({escape(prompt_in.label)}):</b>\n"
+        f"{escape(prompt_in.text)}</blockquote>\n"
+    )
+    prompt_text += (
+        f"<blockquote expandable><b>Outgoing ({escape(prompt_out.label)}):</b>\n"
+        f"{escape(prompt_out.text)}</blockquote>"
+    )
 
     await send_and_delete_message(client, message, prompt_text, 15)
 
@@ -174,33 +251,17 @@ async def show_prompts(client: Client, message: Message) -> None:
     chat_config = get_chat_config(_chat_id(message))
     # Load the default prompt dynamically each time
     default_prompt = str(get_bot_config_value(["prompts", "rephrase"], default="") or "")
-    prompt_in = str(chat_config.get("rephrase_prompt_in") or "")
-    prompt_out = str(chat_config.get("rephrase_prompt_out") or "")
-
-    # Determine source for incoming prompt
-    if prompt_in and len(prompt_in) >= 10:
-        in_source = "CUSTOM"
-        in_display = prompt_in
-    else:
-        in_source = "DEFAULT"
-        in_display = default_prompt
-
-    # Determine source for outgoing prompt
-    if prompt_out and len(prompt_out) >= 10:
-        out_source = "CUSTOM"
-        out_display = prompt_out
-    else:
-        out_source = "DEFAULT"
-        out_display = default_prompt
+    prompt_in = resolve_rephrase_prompt(chat_config, "in", default_prompt)
+    prompt_out = resolve_rephrase_prompt(chat_config, "out", default_prompt)
 
     prompts_text = (
         f"<pre>Prompts Overview:\n"
         f"─────────────────────────\n"
-        f"IN  [{in_source}]:\n"
-        f"{in_display}\n"
+        f"IN  [{escape(prompt_in.label.upper())}]:\n"
+        f"{escape(prompt_in.text)}\n"
         f"─────────────────────────\n"
-        f"OUT [{out_source}]:\n"
-        f"{out_display}</pre>"
+        f"OUT [{escape(prompt_out.label.upper())}]:\n"
+        f"{escape(prompt_out.text)}</pre>"
     )
 
     await send_and_delete_message(client, message, prompts_text, 15)
@@ -221,6 +282,9 @@ async def set_prompt(client: Client, message: Message) -> None:
     new_prompt = _command_argument(message)
     config[chat_id]["rephrase_prompt_in"] = new_prompt
     config[chat_id]["rephrase_prompt_out"] = new_prompt
+    # A typed prompt replaces any template chosen through the control bot.
+    config[chat_id]["rephrase_template_in"] = ""
+    config[chat_id]["rephrase_template_out"] = ""
     # Save the updated config
     save_chat_settings(config)
 
@@ -248,6 +312,7 @@ async def set_prompt_in(client: Client, message: Message) -> None:
 
     new_prompt = _command_argument(message)
     config[chat_id]["rephrase_prompt_in"] = new_prompt
+    config[chat_id]["rephrase_template_in"] = ""
     # Save the updated config
     save_chat_settings(config)
 
@@ -275,6 +340,7 @@ async def set_prompt_out(client: Client, message: Message) -> None:
 
     new_prompt = _command_argument(message)
     config[chat_id]["rephrase_prompt_out"] = new_prompt
+    config[chat_id]["rephrase_template_out"] = ""
     # Save the updated config
     save_chat_settings(config)
 

@@ -12,12 +12,14 @@ from pyrogram import Client, filters, idle, raw
 from pyrogram.enums import ParseMode
 from pyrogram.types import Message
 
+from src.control_bot.service import configure_bot_commands, create_control_bot
 from src.handlers import (
     handle_voice,
     set_global_transcription_mode,
     set_prompt,
     set_prompt_in,
     set_prompt_out,
+    show_config,
     show_help,
     show_prompt,
     show_prompts,
@@ -182,6 +184,10 @@ SESSION_NAME = str(SESSION_DIR / (ACCOUNT or "userbot_session"))
 app = Client(SESSION_NAME, api_id=API_ID, api_hash=API_HASH, phone_number=PHONE_NR)
 app.set_parse_mode(ParseMode.HTML)
 
+# Optional BotFather control bot with an inline-button settings menu. None when
+# control_bot.token is not configured; it shares the userbot's event loop.
+control_bot: Client | None = create_control_bot(app, API_ID, API_HASH, SESSION_DIR)
+
 # Command handlers fire for both normal messages and scheduled messages
 # (UpdateNewScheduledMessage). `~filters.from_scheduled` defensively prevents a
 # second run if a scheduled command ever slipped through and got auto-sent.
@@ -199,6 +205,12 @@ async def help_handler(client: Client, message: Message) -> None:
 async def status_handler(client: Client, message: Message) -> None:
     """Handle ``/statusv``: show the current transcription status panel."""
     await show_status(client, message)
+
+
+@app.on_message(filters.command("vox") & _CMD_BASE)
+async def config_handler(client: Client, message: Message) -> None:
+    """Handle ``/vox``: show every setting of this chat with the command that changes it."""
+    await show_config(client, message)
 
 
 @app.on_message(filters.command("prompt") & _CMD_BASE)
@@ -422,6 +434,16 @@ async def main() -> None:
     """
     await app.start()
     logger.info("Bot started")
+    control = control_bot
+    if control is not None:
+        try:
+            await control.start()
+            await configure_bot_commands(control)
+            logger.info("Control bot started")
+        except Exception:
+            # A bad token must not take the userbot down: continue without the menu.
+            logger.exception("Control bot failed to start; continuing without it")
+            control = None
     idle_task = asyncio.create_task(idle(), name="pyrogram-idle")
     watchdog_task = asyncio.create_task(connection_watchdog(app), name="telegram-connection-watchdog")
     healthcheck_failed = False
@@ -440,6 +462,11 @@ async def main() -> None:
                 healthcheck_failed = True
                 raise
     finally:
+        if control is not None and control.is_connected:
+            try:
+                await asyncio.wait_for(control.stop(), timeout=SHUTDOWN_TIMEOUT_SECONDS)
+            except Exception:
+                logger.warning("Control bot could not be stopped cleanly", exc_info=True)
         try:
             await asyncio.wait_for(app.stop(), timeout=SHUTDOWN_TIMEOUT_SECONDS)
         except TimeoutError:
