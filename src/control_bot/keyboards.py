@@ -68,10 +68,12 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def overview_keyboard() -> InlineKeyboardMarkup:
-    """Build the status screen keyboard with a refresh shortcut."""
+def overview_keyboard(private_enabled: bool, groups_enabled: bool) -> InlineKeyboardMarkup:
+    """Build the status screen with global defaults for unstored chats."""
     return InlineKeyboardMarkup(
         [
+            [_btn(_mark(private_enabled, "New 1:1 chats"), "default|private")],
+            [_btn(_mark(groups_enabled, "New groups"), "default|group")],
             [_btn("🔄 Refresh", "ov")],
             [_btn("💬 Chats", "cl|0"), _btn("🧩 Prompt templates", "tpl")],
             [_btn("⬅️ Back", "home")],

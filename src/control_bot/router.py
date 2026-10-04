@@ -56,6 +56,7 @@ from src.helpers import (
     get_chat_config,
     list_chat_configs,
     new_chat_transcription_default,
+    set_new_chat_transcription_default,
     update_chat_config,
 )
 from src.prompts import (
@@ -126,9 +127,11 @@ class ControlRouter:
         chats = sort_chats(list_chat_configs())
         runtime = dict(get_current_config())
         templates = self._templates()
+        private_enabled = bool(new_chat_transcription_default("1"))
+        groups_enabled = bool(new_chat_transcription_default("-1"))
         return (
-            render_overview_text(chats, runtime, templates, bool(new_chat_transcription_default())),
-            overview_keyboard(),
+            render_overview_text(chats, runtime, templates, private_enabled, groups_enabled),
+            overview_keyboard(private_enabled, groups_enabled),
         )
 
     def chats_screen(self, page: int = 0) -> Screen:
@@ -289,6 +292,7 @@ class ControlRouter:
     def _callbacks(self) -> dict[str, Callable]:
         return {
             "cl": self._cb_chat_list,
+            "default": self._cb_default,
             "c": self._cb_chat,
             "t": self._cb_toggle_enabled,
             "tdir": self._cb_direction,
@@ -309,6 +313,18 @@ class ControlRouter:
 
     async def _cb_chat_list(self, _: int, args: list[str]) -> Screen:
         return self.chats_screen(int(args[0]) if args else 0)
+
+    async def _cb_default(self, _: int, args: list[str]) -> Screen:
+        kind = args[0]
+        if kind not in ("private", "group"):
+            return self.overview()
+        chat_id = "1" if kind == "private" else "-1"
+        key = "transcription_enabled_new_chats" if kind == "private" else "transcription_enabled_new_groups"
+        enabled = not bool(new_chat_transcription_default(chat_id))
+        if not set_new_chat_transcription_default(key, enabled):
+            text, keyboard = self.overview()
+            return "⚠️ Could not save the global default.\n\n" + text, keyboard
+        return self.overview()
 
     async def _cb_chat(self, _: int, args: list[str]) -> Screen:
         return await self.chat_detail(args[0]) or self.chats_screen()

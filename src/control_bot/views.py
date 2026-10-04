@@ -87,7 +87,8 @@ def render_overview_text(
     chats: list[tuple[str, ChatConfig]],
     runtime: dict[str, object],
     templates: list[PromptTemplate],
-    new_chats_enabled: bool,
+    new_private_enabled: bool,
+    new_groups_enabled: bool,
 ) -> str:
     """Build the status screen: providers, counts and a compact chat summary."""
     active = sum(1 for _, chat_config in chats if is_enabled(chat_config))
@@ -104,7 +105,8 @@ def render_overview_text(
         f"🧠 Rephrasing: {escape(rephrase_provider)} · <code>{escape(rephrase_model)}</code>",
         f"🧩 Prompt templates: {len(templates)}",
         f"💬 Chats: {active} active · {paused} paused ({len(chats)} stored)",
-        f"🆕 New chats transcribe by default: {_yes_no(new_chats_enabled)}",
+        f"🆕 New 1:1 chats transcribe: {_yes_no(new_private_enabled)}",
+        f"👥 New groups transcribe: {_yes_no(new_groups_enabled)}",
     ]
     if chats:
         lines += ["", "<b>Chats</b>"]
@@ -121,7 +123,7 @@ def render_overview_text(
 def render_chats_text(count: int, page: int, pages: int) -> str:
     """Build the chat-list screen header."""
     if not count:
-        return "💬 <b>Chats</b>\n\nNo chats configured yet. Add one, or just send a voice in any chat."
+        return "💬 <b>Chats</b>\n\nNo chats configured yet. Add one to save its own settings."
     page_note = f" · page {page + 1}/{pages}" if pages > 1 else ""
     return (
         f"💬 <b>Chats</b> ({count}{page_note})\n\n"
@@ -231,6 +233,6 @@ def render_delete_chat_text(chat_id: str, chat_config: ChatConfig) -> str:
     """Build the confirm screen for deleting a chat entry."""
     return (
         f"🗑 <b>Delete</b> {escape(chat_label(chat_id, chat_config))} <code>{escape(chat_id)}</code>?\n\n"
-        "This removes the chat's stored settings (including custom prompts). The next voice in "
-        "that chat recreates it with the defaults.\nTo stop transcribing temporarily, pause the chat instead."
+        "This removes the chat's stored settings (including custom prompts). Future voices use "
+        "the global default without recreating the entry.\nTo stop transcribing temporarily, pause the chat instead."
     )

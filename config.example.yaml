@@ -64,15 +64,11 @@ logging:
   # for debugging, but the logs then contain the full message content.
   verbose: false
 
-# New-chat behaviour
-# Controls whether transcription is automatically ON in chats the bot has never
-# seen before (i.e. not yet stored in chats.json). Existing chats keep whatever
-# you configured with /ton, /toff, /tin, /tout.
-#   true  (default) -> transcribe everywhere out of the box; opt OUT per chat
-#                      with /toff.
-#   false           -> stay silent in new chats until you opt IN per chat with
-#                      /ton.
+# Defaults for chats without an entry in chats.json. Change them in the private
+# control bot's Status screen or here. Existing chat entries keep their settings.
+# New 1:1 chats transcribe automatically; new groups stay silent until /ton.
 transcription_enabled_new_chats: true
+transcription_enabled_new_groups: false
 
 # Model configurations
 models:

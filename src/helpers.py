@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
+import stat
 import tempfile
 import threading
 from datetime import datetime, timedelta
@@ -22,6 +24,7 @@ logger = get_logger(__name__)
 # Serializes writes to chats.json so concurrent commands (or threads spawned via
 # asyncio.to_thread) can never interleave and corrupt the file.
 _CHATS_FILE_LOCK = threading.Lock()
+_BOT_CONFIG_FILE_LOCK = threading.Lock()
 
 type YamlConfig = dict[str, Any]
 type ChatConfigValue = str | int | bool | None
@@ -79,18 +82,51 @@ def _as_bool(value: object, default: bool) -> bool:
     return default
 
 
-def new_chat_transcription_default() -> int:
-    """Return the global transcription flag (1/0) used for chats not yet stored.
+def new_chat_transcription_default(chat_id: str) -> int:
+    """Return the default master switch for an unstored private chat or group."""
+    is_group = int(chat_id) < 0
+    key = "transcription_enabled_new_groups" if is_group else "transcription_enabled_new_chats"
+    default = not is_group
+    return int(_as_bool(get_bot_config_value([key], default=default), default=default))
 
-    Reads ``transcription_enabled_new_chats`` from ``config.yaml`` (default True),
-    deciding whether the bot transcribes in a brand-new chat before any ``/ton`` /
-    ``/toff`` has been issued.
 
-    Returns:
-        1 if new chats should transcribe by default, otherwise 0.
-    """
-    raw = get_bot_config_value(["transcription_enabled_new_chats"], default=True)
-    return 1 if _as_bool(raw, default=True) else 0
+def set_new_chat_transcription_default(key: str, enabled: bool) -> bool:
+    """Change one top-level default in config.yaml without reformatting the file."""
+    if key not in {"transcription_enabled_new_chats", "transcription_enabled_new_groups"}:
+        return False
+    try:
+        with _BOT_CONFIG_FILE_LOCK:
+            with open(BOT_CONFIG_FILE, encoding="utf-8", newline="") as source:
+                original = source.read()
+            newline = "\r\n" if "\r\n" in original else "\n"
+            pattern = re.compile(rf"^({re.escape(key)}:[ \t]*)([^#\r\n]*?)([ \t]*(?:#[^\r\n]*)?)(?=\r?$)", re.MULTILINE)
+            matches = list(pattern.finditer(original))
+            if len(matches) > 1:
+                raise ValueError(f"Duplicate {key} in config.yaml")
+            value = "true" if enabled else "false"
+            if matches:
+                match = matches[0]
+                updated = original[: match.start()] + match.group(1) + value + match.group(3) + original[match.end() :]
+            else:
+                updated = original + ("" if not original or original.endswith(("\n", "\r")) else newline) + f"{key}: {value}{newline}"
+            if updated == original:
+                return True
+            fd, tmp_name = tempfile.mkstemp(dir=str(BOT_CONFIG_FILE.parent), prefix=".config.", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8", newline="") as target:
+                    os.chmod(tmp_name, stat.S_IMODE(BOT_CONFIG_FILE.stat().st_mode))
+                    target.write(updated)
+                    target.flush()
+                    os.fsync(target.fileno())
+                os.replace(tmp_name, BOT_CONFIG_FILE)
+            except BaseException:
+                if os.path.exists(tmp_name):
+                    os.remove(tmp_name)
+                raise
+        return True
+    except Exception:
+        logger.exception("Could not update %s in config.yaml", key)
+        return False
 
 
 def migrate_legacy_chat_settings_file() -> None:
@@ -295,7 +331,7 @@ def ensure_chat_config(chat_id: str, chatname: str = "") -> ChatSettings:
     for key, val in CONFIG_DEFAULTS.items():
         if key not in config[chat_id]:
             # Brand-new chats honour the configurable transcription default.
-            config[chat_id][key] = new_chat_transcription_default() if (key == "transcription" and is_new_chat) else val
+            config[chat_id][key] = new_chat_transcription_default(chat_id) if (key == "transcription" and is_new_chat) else val
             changed = True
 
     if chatname and "chatname" not in config[chat_id]:
@@ -337,7 +373,7 @@ def get_chat_config(chat_id: str, settings: ChatSettings | None = None) -> ChatC
     for key, val in CONFIG_DEFAULTS.items():
         if key not in chat_config:
             # Brand-new chats honour the configurable transcription default.
-            chat_config[key] = new_chat_transcription_default() if (key == "transcription" and is_new_chat) else val
+            chat_config[key] = new_chat_transcription_default(chat_id) if (key == "transcription" and is_new_chat) else val
 
     logger.info(f"Returning chat config with {len(chat_config)} settings for chat {chat_id}")
     return chat_config
