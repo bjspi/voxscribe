@@ -11,7 +11,7 @@
   <img src="https://img.shields.io/badge/powered%20by-Groq%20%7C%20OpenAI-orange" alt="Powered by Groq">
 </p>
 
-> Turn every voice message into clean, readable text — automatically, on your own Telegram account, in **any** chat.
+> Turn voice messages into clean, readable text on your own Telegram account — automatically in private chats, and in groups you enable.
 
 A self-hosted Telegram **userbot** that transcribes voice messages in real time using AI speech recognition. It works in **1-on-1 DMs and group chats alike**, listens to incoming **and** outgoing voices, optionally rephrases the transcription into polished text, and can clean up the original audio afterwards — all controlled per chat with simple slash commands or, optionally, a button-driven control bot.
 
@@ -19,12 +19,12 @@ A self-hosted Telegram **userbot** that transcribes voice messages in real time 
 
 ## ✨ Features
 
-- 🎙️ **Automatic transcription** — every voice message becomes text, in DMs *and* groups
+- 🎙️ **Automatic transcription** — on by default in new 1-on-1 chats; opt in for new groups
 - 👥 **Per-chat control** — each 1:1 and each group keeps its own independent settings
 - 🔁 **Two directions** — transcribe what you *receive*, what you *send*, or both
 - 🧠 **AI rephrasing** — optionally clean up filler words while keeping your tone & style
 - 📄 **Markdown files per chat** — send the original transcript and rephrased version together in one `.md` attachment; off by default
-- 🎛️ **Control bot** — an optional BotFather bot with an inline-button menu: see every chat, add / pause / delete chats and flip *all* per-chat settings from one place
+- 🎛️ **Control bot** — an optional BotFather bot with an inline-button menu: manage configured chats and both global defaults from one place
 - 🧩 **Prompt templates** — freely configurable rephrasing templates (with summary, summary only, bullet points, verbatim, …) selectable per chat and direction
 - ⚡ **Built for speed** — Groq's LPU or OpenAI Whisper, your choice per task
 - 🎛️ **Mixed mode** — e.g. Groq for fast transcription, OpenAI for high-quality rephrasing
@@ -53,7 +53,7 @@ A self-hosted Telegram **userbot** that transcribes voice messages in real time 
 ## 🚀 How It Works
 
 1. The bot watches your account for voice messages in all your chats (DMs and groups).
-2. A voice arrives → it downloads and transcribes the audio.
+2. A voice arrives → the bot checks that chat's settings (or its global default), then transcribes if enabled.
 3. *(Optional)* It rephrases the transcription for readability.
 4. The text is posted as a reply to the original voice message.
 5. *(Optional)* The original voice note is deleted to keep the chat tidy.
@@ -67,12 +67,12 @@ A self-hosted Telegram **userbot** that transcribes voice messages in real time 
 ## 👥 1-on-1 vs. Group Chats
 
 The bot reacts to voice messages in **every** chat type — direct messages, groups and
-supergroups. Each chat is configured **independently** (settings are keyed by chat ID), so
-you decide per conversation what happens.
+supergroups. You can save settings for individual chats, keyed by chat ID.
 
 > ⚡ **New 1-on-1 chats are ON; new groups are OFF by default.** A chat without saved
 > settings uses its global default without creating an entry in `chats.json`.
 > Change either default in the control bot's **Status** screen or in `config.yaml`.
+> Saved chat settings take priority, so changing a global default does not change chats you configured earlier.
 
 | | **1-on-1 (DM)** | **Group / Supergroup** |
 |---|---|---|
@@ -98,8 +98,8 @@ until you `/ton` it again.
 
 > ⚠️ **Group privacy:** Because this is a **userbot**, every transcription is posted **as you**
 > into the chat — in a group that means **all members see it**. If you only want transcriptions
-> for yourself in a noisy group, either keep them in your DMs, or use `/toff` to mute the bot
-> there. The *Scheduled Messages* trick keeps things invisible in **1-on-1** chats only.
+> for yourself in a noisy group, keep that group disabled and use your DMs instead.
+> The *Scheduled Messages* trick keeps things invisible in **1-on-1** chats only.
 
 > 🤖 Voice notes sent by **bots** are skipped automatically.
 
@@ -134,7 +134,8 @@ pip install -r requirements.txt
 
 ## ⚙️ Configuration
 
-All settings live in **`config.yaml`** (gitignored — your secrets stay local).
+Global settings live in **`config.yaml`**; individual chat overrides live in `chats.json`.
+Both files are gitignored, so your secrets and chat list stay local.
 
 ```bash
 cp config.example.yaml config.yaml
@@ -249,7 +250,10 @@ api:
 
 ### 🎚️ Behaviour & privacy settings
 
-A few optional toggles in `config.yaml` control defaults and logging:
+A few optional toggles in `config.yaml` control defaults and logging. The two transcription
+keys are optional: when absent, 1-on-1 chats default to `true` and groups to `false`.
+The control bot's **Status** buttons save these keys to `config.yaml` and take effect on the
+next voice message without a restart. Existing entries in `chats.json` keep their own settings.
 
 ```yaml
 # Defaults for chats without their own entry in chats.json.
@@ -472,8 +476,8 @@ token gets a new session file). A wrong token only logs an error — the userbot
   (which is also the easiest way to find your own id: message the bot once and read the log).
 - Without `owner_id` the bot **refuses to start**, so it can never be left open by accident.
 - Destructive actions (deleting a chat) always go through an explicit confirm screen.
-- It never touches your Telegram account: chat lookups for *Add chat* go through the userbot,
-  everything else is a `chats.json` edit.
+- It never touches your Telegram account: chat lookups for *Add chat* go through the userbot;
+  per-chat buttons edit `chats.json`, while the two global default buttons edit `config.yaml`.
 
 ---
 
