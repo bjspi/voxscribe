@@ -478,9 +478,8 @@ async def handle_voice(client: Client, message: Message) -> None:
     chat_info = get_chat_info(message.chat)
     message_direction = "outgoing" if message.outgoing else "incoming"
     logger.info(f"Handling {message_direction} voice message for {chat_info}")
-    # Make sure the chat has a stored entry: that is what the control bot lists,
-    # and what a deleted chat is recreated from on its next voice.
-    chat_config = _ensure_chat_settings(message)[_chat_id(message)]
+    # A voice uses the applicable default without creating a chat override.
+    chat_config = get_chat_config(_chat_id(message))
 
     # Respect global chat toggle first.
     transcription_enabled_globally = bool(chat_config.get("transcription", 1))

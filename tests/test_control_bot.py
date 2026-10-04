@@ -14,6 +14,7 @@ from src.control_bot.keyboards import chat_detail_keyboard, prompt_picker_keyboa
 from src.control_bot.router import ControlRouter
 from src.control_bot.service import create_control_bot, load_control_bot_settings
 from src.control_bot.views import render_overview_text
+from src.handlers import handle_voice
 from src.helpers import get_chat_config
 from src.prompts import PromptTemplate
 
@@ -71,8 +72,8 @@ class ControlRouterTests(unittest.IsolatedAsyncioTestCase):
         self.settings_file.write_text(
             json.dumps({"1": {"chatname": "Bob", "markdown_output": 1}, "2": {"chatname": "Anna"}, "3": {}})
         )
-        config_file = directory / "config.yaml"
-        config_file.write_text(
+        self.config_file = directory / "config.yaml"
+        self.config_file.write_text(
             yaml.safe_dump(
                 {
                     "prompts": {"rephrase": DEFAULT},
@@ -82,7 +83,7 @@ class ControlRouterTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.enterContext(patch("src.helpers.CHATS_FILE", self.settings_file))
-        self.enterContext(patch("src.helpers.BOT_CONFIG_FILE", config_file))
+        self.enterContext(patch("src.helpers.BOT_CONFIG_FILE", self.config_file))
         self.enterContext(patch("src.control_bot.router.logger"))
         self.userbot = FakeUserbot()
         self.router = ControlRouter(self.userbot)
@@ -101,13 +102,64 @@ class ControlRouterTests(unittest.IsolatedAsyncioTestCase):
 
         text, markup = await self.route("ov")
         self.assertIn("3 active · 0 paused (3 stored)", text)
-        self.assertIn("New chats transcribe by default: off", text)
+        self.assertIn("New 1:1 chats transcribe: off", text)
+        self.assertIn("New groups transcribe: off", text)
 
         text, markup = await self.route("cl|0")
         self.assertIn("(3)", text)
         chat_buttons = [data for data in callback_data(markup) if data.startswith("c|")]
         self.assertEqual(chat_buttons, ["c|2", "c|1", "c|3"])
         self.assertIsNone(await self.route("nop"))
+
+    async def test_global_defaults_toggle_without_reformatting_config(self) -> None:
+        self.config_file.write_bytes(self.config_file.read_bytes().replace(b"\n", b"\r\n") + b"# retained comment\r\n")
+        text, markup = await self.route("ov")
+        self.assertEqual(buttons(markup)["▫️ New 1:1 chats"], "default|private")
+        self.assertEqual(buttons(markup)["▫️ New groups"], "default|group")
+
+        text, markup = await self.route("default|private")
+        self.assertIn("New 1:1 chats transcribe: on", text)
+        self.assertEqual(buttons(markup)["✅ New 1:1 chats"], "default|private")
+        text, markup = await self.route("default|group")
+        self.assertIn("New groups transcribe: on", text)
+        self.assertEqual(buttons(markup)["✅ New groups"], "default|group")
+        self.assertEqual(get_chat_config("-999")["transcription"], 1)
+        self.assertEqual(get_chat_config("999")["transcription"], 1)
+        self.assertIn(b"# retained comment\r\n", self.config_file.read_bytes())
+        self.assertIn(b"transcription_enabled_new_groups: true\r\n", self.config_file.read_bytes())
+        self.assertEqual(self.config_file.read_bytes().count(b"\n"), self.config_file.read_bytes().count(b"\r\n"))
+        self.assertEqual(json.loads(self.settings_file.read_text()).keys(), {"1", "2", "3"})
+
+        text, _ = await self.route("default|group")
+        self.assertIn("New groups transcribe: off", text)
+        self.assertEqual(get_chat_config("-999")["transcription"], 0)
+
+    async def test_voice_uses_defaults_without_creating_entries(self) -> None:
+        self.config_file.write_text(
+            self.config_file.read_text().replace(
+                "transcription_enabled_new_chats: false", "transcription_enabled_new_chats: true"
+            )
+        )
+        before = self.settings_file.read_bytes()
+        group = SimpleNamespace(chat=SimpleNamespace(id=-999, title="New Group"), outgoing=False,
+                                from_user=SimpleNamespace(is_bot=False))
+        private = SimpleNamespace(chat=SimpleNamespace(id=999, first_name="New DM"), outgoing=False,
+                                  from_user=SimpleNamespace(is_bot=False))
+        with patch("src.handlers.transcribe_voice", new_callable=AsyncMock) as transcribe:
+            await handle_voice(self.userbot, group)
+            transcribe.assert_not_awaited()
+            await handle_voice(self.userbot, private)
+            transcribe.assert_awaited_once_with(self.userbot, private)
+        self.assertEqual(self.settings_file.read_bytes(), before)
+
+        stored = json.loads(before)
+        stored["-998"] = {"chatname": "Enabled Group", "transcription": 1}
+        self.settings_file.write_text(json.dumps(stored))
+        enabled_group = SimpleNamespace(chat=SimpleNamespace(id=-998, title="Enabled Group"), outgoing=False,
+                                        from_user=SimpleNamespace(is_bot=False))
+        with patch("src.handlers.transcribe_voice", new_callable=AsyncMock) as transcribe:
+            await handle_voice(self.userbot, enabled_group)
+            transcribe.assert_awaited_once_with(self.userbot, enabled_group)
 
     async def test_missing_chat_name_is_resolved_through_the_userbot(self) -> None:
         self.settings_file.write_text(json.dumps({"555": {}}))
@@ -254,7 +306,7 @@ class ControlRouterTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(sum(len(row) for row in markup.inline_keyboard), 100)
         self.assertIn("…", markup.inline_keyboard[1][0].text)
         chats = [(str(i), {"chatname": "x" * 200}) for i in range(60)]
-        text = render_overview_text(chats, {}, many, True)
+        text = render_overview_text(chats, {}, many, True, False)
         self.assertLessEqual(len(text), 4096)
 
 

@@ -70,11 +70,9 @@ The bot reacts to voice messages in **every** chat type — direct messages, gro
 supergroups. Each chat is configured **independently** (settings are keyed by chat ID), so
 you decide per conversation what happens.
 
-> ⚡ **Important — it's ON everywhere by default.** Transcription is automatically active in
-> **every** chat the bot hasn't seen before (DMs *and* groups). There is no per-chat opt-in:
-> if you don't want it in a particular group, you have to **turn it off there** with `/toff`.
-> You can flip this default with **`transcription_enabled_new_chats: false`** in `config.yaml`
-> (see the **Configuration** section) — then new chats stay silent until you `/ton` them.
+> ⚡ **New 1-on-1 chats are ON; new groups are OFF by default.** A chat without saved
+> settings uses its global default without creating an entry in `chats.json`.
+> Change either default in the control bot's **Status** screen or in `config.yaml`.
 
 | | **1-on-1 (DM)** | **Group / Supergroup** |
 |---|---|---|
@@ -86,7 +84,7 @@ you decide per conversation what happens.
 
 **How to adjust a specific chat** — send the command **inside that exact chat**; it only
 affects that one conversation (the setting is stored under that chat's ID). Since
-transcription is already ON everywhere, this is mostly about turning things **off**:
+new groups stay silent until you explicitly turn them on:
 
 ```
 /toff       → master switch OFF for THIS chat (silences it entirely, e.g. a noisy group)
@@ -254,10 +252,9 @@ api:
 A few optional toggles in `config.yaml` control defaults and logging:
 
 ```yaml
-# Transcribe by default in chats the bot has never seen before?
-#   true  (default) → ON everywhere, opt OUT per chat with /toff
-#   false           → silent in new chats until you opt IN with /ton
+# Defaults for chats without their own entry in chats.json.
 transcription_enabled_new_chats: true
+transcription_enabled_new_groups: false
 
 logging:
   retention_days: 10
@@ -269,7 +266,8 @@ logging:
 
 | Setting | Default | Effect |
 |---|---|---|
-| `transcription_enabled_new_chats` | `true` | Whether a brand-new chat (not yet in `chats.json`) transcribes automatically. Existing chats keep their own saved setting. |
+| `transcription_enabled_new_chats` | `true` | Default for 1:1 chats without a saved entry. |
+| `transcription_enabled_new_groups` | `false` | Default for groups without a saved entry. Existing group entries retain their settings. |
 | `logging.verbose` | `false` | When off, transcription/rephrasing content is logged only as a ~200-char preview. Turn on to log full content while debugging. |
 | `control_bot.token` | *(empty)* | BotFather token of the optional [control bot](#control-bot). Empty = disabled. |
 | `control_bot.owner_id` | `0` | Your numeric Telegram user id — the only user allowed to talk to the control bot. Required when a token is set. |
@@ -441,14 +439,14 @@ for outgoing voices.
 
 | Screen | Actions |
 |---|---|
-| **📊 Status** | Providers and models in use, number of templates, active / paused chat counts, a one-line summary per chat (`▶️ Alice · both · 💬 text · 🧠`). |
+| **📊 Status** | Providers and models, stored chat counts, and switches for the global defaults of new 1:1 chats and groups. These switches save to `config.yaml`. |
 | **💬 Chats** | Every configured chat as a button (paged, 12 per page, unnamed chats last). **➕ Add chat** picks from your 20 most recently active dialogs or takes a typed id / `@username`. |
 | **Chat settings** | **Pause / resume** (master switch), **direction** (incoming / outgoing / both), **output** (inline text or Markdown file), **AI rephrasing**, **delete voice** after transcription per direction, and **🗑 Delete chat** (always behind a confirm screen). |
 | **🧩 Prompts** | Per direction: pick a **template**, fall back to the global **default**, or type a **custom prompt** as a message. *Set both directions* applies one choice to incoming and outgoing. *View* shows the full active prompt text. |
 | **🧩 Prompt templates** | Read-only list of the templates from `config.yaml`, with the `{default_prompt}` placeholder expanded so you see exactly what the model gets. |
 
-Everything the buttons change is the same data the slash commands change, so you can mix
-both freely; `/vox` in a chat always shows the current state.
+Per-chat buttons and slash commands change the same saved chat settings. The two switches
+on **Status** change global defaults; `/vox` shows the current state for one chat.
 
 ### Setup
 
@@ -568,11 +566,10 @@ voxscribe/
 
 ## 🗃️ Per-chat settings (`chats.json`)
 
-Every chat the bot interacts with gets its own entry in `chats.json`, keyed by the numeric
-**Telegram chat ID**. The file is created and updated automatically whenever you run a command,
-add a chat in the control bot, or a voice message arrives — you normally never edit it by
-hand. Deleting a chat in the control bot only removes its settings; the next voice in that chat
-recreates the entry with the defaults. It is **gitignored** (it maps
+Only chats you explicitly configure get an entry in `chats.json`, keyed by the numeric
+**Telegram chat ID**. A voice message reads the global default but never creates an entry.
+Commands that change settings and **Add chat** in the control bot do create entries.
+Deleting an entry restores the global default for that chat type. The file is **gitignored** (it maps
 your private chats) and written atomically, with a `.json.backup` kept alongside it.
 
 ```jsonc
@@ -601,8 +598,8 @@ your private chats) and written atomically, with a `.json.backup` kept alongside
 - Values are `1` (on) / `0` (off); prompt fields are strings (empty = use the global prompt),
   template fields hold a template key from `config.yaml` (empty = none).
 - **Missing keys fall back to defaults**, so a minimal `{ "transcription": 1 }` entry is valid.
-- A chat with **no entry at all** uses `transcription_enabled_new_chats` to decide whether it
-  starts ON or OFF (see the **Configuration** section).
+- A chat with **no entry at all** uses `transcription_enabled_new_chats` for 1:1 chats or
+  `transcription_enabled_new_groups` for groups. Existing entries keep their saved state.
 
 ---
 
