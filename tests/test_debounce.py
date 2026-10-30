@@ -17,6 +17,7 @@ from src.transcription import (
     _split_for_telegram,
     get_current_config,
     note_chat_message,
+    transcribe_voice,
 )
 
 KEY = (100, 7)
@@ -237,3 +238,24 @@ class ChatMessageTriggerTests(unittest.TestCase):
             note_chat_message(client, self._message(True, "🔇 No speech recognized."))
         self.assertEqual(collector.request_flush.call_count, 2)
         collector.request_flush.assert_called_with((100, 7))
+
+
+class MaxWaitSelectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_own_and_other_voices_use_their_own_limits(self) -> None:
+        config = {"debounce": {"quiet_seconds": 4, "max_wait_seconds": 60, "own_max_wait_seconds": 900}}
+        with patch("src.transcription.load_bot_config", return_value=config):
+            runtime = get_current_config()
+        for outgoing, expected in ((True, (None, 900)), (False, (4, 60))):
+            message = SimpleNamespace(
+                outgoing=outgoing,
+                chat=SimpleNamespace(id=1, first_name="x"),
+                from_user=SimpleNamespace(id=7),
+            )
+            with ExitStack() as stack:
+                stack.enter_context(patch("src.transcription.get_current_config", return_value=runtime))
+                stack.enter_context(patch("src.transcription.get_chat_config", return_value={"rephrase_debounce": 1}))
+                stack.enter_context(patch("src.transcription.logger"))
+                stack.enter_context(patch("src.transcription._transcribe_message", new=AsyncMock(return_value=None)))
+                collector = stack.enter_context(patch("src.transcription._collector"))
+                await transcribe_voice(None, message)
+            collector.voice_started.assert_called_once_with((1, 7), *expected)

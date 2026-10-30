@@ -270,8 +270,9 @@ Off by default; set per chat.
 
 Telegram never reports your own recording status, so your own voices are held
 until you post anything that is not a voice (text, sticker, a command), someone
-else writes in the chat, or you send `/go`. After `debounce.max_wait_seconds`
-(default 5 minutes) a batch is sent in any case.
+else writes in the chat, or you send `/go`. After `debounce.own_max_wait_seconds`
+(default 5 minutes) they are sent in any case; `debounce.max_wait_seconds` is the
+same limit for other senders.
 
 ### 🎯 Quality fallback
 

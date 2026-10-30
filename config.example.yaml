@@ -96,12 +96,14 @@ models:
 # (rephrased together when rephrasing is on).
 # Telegram never reports your own recording status, so your own voices have no
 # quiet window: they are sent with your next non-voice message, the next
-# message from someone else in the chat, /go, or after max_wait_seconds.
+# message from someone else in the chat, /go, or after own_max_wait_seconds.
 debounce:
   # Other senders: send once they have neither sent nor recorded a voice for this long.
   quiet_seconds: 8
-  # Everyone: send at the latest this long after the first collected voice.
+  # Other senders: send at the latest this long after their first collected voice.
   max_wait_seconds: 300
+  # Your own voices: send at the latest this long after your first collected voice.
+  own_max_wait_seconds: 300
 
 # Quality fallback for transcriptions (Whisper models only; they report
 # log-probabilities via verbose_json). A second transcription of the same voice

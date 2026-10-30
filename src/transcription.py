@@ -98,6 +98,7 @@ class RuntimeConfig(TypedDict):
     verbose_logging: bool
     debounce_quiet_seconds: int
     debounce_max_wait_seconds: int
+    debounce_own_max_wait_seconds: int
     quality: QualitySettings
 
 
@@ -798,6 +799,10 @@ def get_current_config() -> RuntimeConfig:
             get_config_value(config, ["debounce", "max_wait_seconds"], default=300),
             default=300,
         ),
+        "debounce_own_max_wait_seconds": _coerce_positive_int(
+            get_config_value(config, ["debounce", "own_max_wait_seconds"], default=300),
+            default=300,
+        ),
         "quality": _quality_settings(config),
     }
 
@@ -1155,8 +1160,12 @@ async def transcribe_voice(client: Client, message: Message) -> None:
     if debounce:
         # Telegram never reports your own recording status, so your own voices
         # wait for the next non-voice message, the partner or /go instead.
-        quiet = None if message.outgoing else current_config["debounce_quiet_seconds"]
-        _collector.voice_started(key, quiet, current_config["debounce_max_wait_seconds"])
+        if message.outgoing:
+            _collector.voice_started(key, None, current_config["debounce_own_max_wait_seconds"])
+        else:
+            _collector.voice_started(
+                key, current_config["debounce_quiet_seconds"], current_config["debounce_max_wait_seconds"]
+            )
 
     groq_client, openai_client = _build_clients(current_config)
     transcript = await _transcribe_message(message, current_config, groq_client, openai_client)
