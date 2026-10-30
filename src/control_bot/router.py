@@ -298,6 +298,7 @@ class ControlRouter:
             "tdir": self._cb_direction,
             "tmd": self._cb_output,
             "rephrase": self._cb_rephrasing,
+            "deb": self._cb_debounce,
             "del": self._cb_delete_voice,
             "prompts": self._cb_prompts,
             "pp": self._cb_prompt_picker,
@@ -359,6 +360,13 @@ class ControlRouter:
         chat_config = self._stored_chat(chat_id)
         if chat_config is not None:
             self._apply(chat_id, {"rephrasing": 0 if chat_config.get("rephrasing", 1) else 1})
+        return await self.chat_detail(chat_id) or self.chats_screen()
+
+    async def _cb_debounce(self, _: int, args: list[str]) -> Screen:
+        chat_id = args[0]
+        chat_config = self._stored_chat(chat_id)
+        if chat_config is not None:
+            self._apply(chat_id, {"rephrase_debounce": 0 if chat_config.get("rephrase_debounce", 0) else 1})
         return await self.chat_detail(chat_id) or self.chats_screen()
 
     async def _cb_delete_voice(self, _: int, args: list[str]) -> Screen:

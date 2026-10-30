@@ -69,6 +69,11 @@ def rephrasing_on(chat_config: ChatConfig) -> bool:
     return bool(chat_config.get("rephrasing", 1))
 
 
+def debounce_on(chat_config: ChatConfig) -> bool:
+    """Return whether a sender's consecutive voices are collected before rephrasing."""
+    return bool(chat_config.get("rephrase_debounce", 0))
+
+
 def state_icon(active: bool) -> str:
     """Return the running/paused chip used across lists and detail screens."""
     return "▶️" if active else "⏸"

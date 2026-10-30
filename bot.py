@@ -24,6 +24,7 @@ from src.handlers import (
     show_prompt,
     show_prompts,
     show_status,
+    toggle_debounce,
     toggle_markdown_output,
     toggle_rephrasing,
     toggle_transcription_mode,
@@ -31,6 +32,7 @@ from src.handlers import (
 )
 from src.helpers import get_bot_config_value
 from src.logging import LOGS_DIR, get_logger
+from src.transcription import note_recording_update
 
 logger = get_logger(__name__)
 
@@ -267,6 +269,12 @@ async def markdown_handler(client: Client, message: Message) -> None:
     await toggle_markdown_output(client, message)
 
 
+@app.on_message(filters.command("debounce") & _CMD_BASE)
+async def debounce_handler(client: Client, message: Message) -> None:
+    """Handle ``/debounce [on|off]``: collect a sender's voices before rephrasing."""
+    await toggle_debounce(client, message)
+
+
 @app.on_message(filters.command(["delin", "delout"]) & _CMD_BASE)
 async def toggle_delete_handler(client: Client, message: Message) -> None:
     """Handle ``/delin`` and ``/delout``: toggle deletion of voices after transcription."""
@@ -279,6 +287,14 @@ async def toggle_delete_handler(client: Client, message: Message) -> None:
 async def voice_handler(client: Client, message: Message) -> None:
     """Handle every incoming/outgoing voice message and route it to transcription."""
     await handle_voice(client, message)
+
+
+# Own group: Pyrogram stops at the first matching handler per group, and a raw
+# handler matches every update, so in group 0 it would swallow all messages.
+@app.on_raw_update(group=1)
+async def recording_status_handler(client: Client, update: object, users: object, chats: object) -> None:
+    """Track "recording voice" status for the per-chat rephrasing debounce."""
+    note_recording_update(update)
 
 
 def _is_pyrogram_shutdown_error(exc: OSError) -> bool:

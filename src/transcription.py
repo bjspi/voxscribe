@@ -8,6 +8,7 @@ import os
 import re
 import tempfile
 import textwrap
+from dataclasses import dataclass
 from datetime import datetime
 from html import escape
 from io import BytesIO
@@ -18,7 +19,8 @@ from groq import Groq
 from pyrogram import Client
 from pyrogram.types import Message
 
-from src.helpers import YamlConfig, get_chat_config, get_chat_info, get_config_value, load_bot_config
+from src.debounce import DebounceCollector, SenderKey, recording_status_from_update
+from src.helpers import ChatConfig, YamlConfig, get_chat_config, get_chat_info, get_config_value, load_bot_config
 from src.logging import get_logger
 from src.prompts import resolve_rephrase_prompt
 
@@ -29,7 +31,12 @@ logger = get_logger(__name__)
 # characters (privacy + smaller log files).
 LOG_PREVIEW_CHARS = 200
 
+# Inline replies are split into parts of at most this many characters, which
+# leaves room for the reference, HTML escaping and blockquote tags.
+INLINE_CHUNK_CHARS = 3000
+
 ProviderName = Literal["GROQ", "OPENAI"]
+BUILTIN_PROVIDERS = ("GROQ", "OPENAI")
 ProviderErrorCode = Literal[
     "dns",
     "timeout",
@@ -41,23 +48,38 @@ ProviderErrorCode = Literal[
 ]
 
 
+class CustomProvider(TypedDict):
+    """One user-defined OpenAI-compatible chat endpoint from ``api.custom_providers``."""
+
+    base_url: str
+    api_key: str
+    model: str
+    reasoning_effort: str
+
+
 class RuntimeConfig(TypedDict):
     """Resolved runtime settings used by one transcription workflow."""
 
     transcription_provider: ProviderName
-    rephrase_provider: ProviderName
+    # GROQ, OPENAI or the name of an entry in custom_providers.
+    rephrase_provider: str
     openai_api_key: str
     groq_api_key: str
+    custom_providers: dict[str, CustomProvider]
     transcription_model_openai: str
     rephrase_model_openai: str
     transcription_model_groq: str
     rephrase_model_groq: str
+    # Model of the selected rephrasing provider, for status displays.
+    rephrase_model: str
     transcription_prompt: str
     rephrase_prompt: str
     graceful_degradation_enabled: bool
     provider_fallback_enabled: bool
     transcription_retry_count: int
     verbose_logging: bool
+    debounce_quiet_seconds: int
+    debounce_max_wait_seconds: int
 
 
 class ProviderAttempt(TypedDict):
@@ -67,6 +89,15 @@ class ProviderAttempt(TypedDict):
     attempt: int
     error_code: ProviderErrorCode
     hint: str
+
+
+@dataclass(frozen=True)
+class VoiceTranscript:
+    """The transcription of one voice, waiting to be rephrased and sent."""
+
+    message: Message
+    text: str
+    fallback_notice: str
 
 
 class TranscriptionRecoveryResult(TypedDict):
@@ -206,44 +237,98 @@ def _get_sender_label(message: Message) -> str:
     return "Unknown"
 
 
-def _build_voice_reference(message: Message) -> str:
-    """Build the sender and duration reference for a voice transcript.
+def _voice_seconds(message: Message) -> int:
+    """Return a voice message's duration in whole seconds (0 if unknown)."""
+    try:
+        return max(0, int(getattr(getattr(message, "voice", None), "duration", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _total_duration(messages: list[Message]) -> str:
+    """Format the summed duration of several voices as ``M:SS``."""
+    return _format_voice_duration(sum(_voice_seconds(message) for message in messages))
+
+
+def _build_voice_reference(messages: list[Message]) -> str:
+    """Build the sender and duration reference for one or several collected voices.
 
     Args:
-        message: The voice message being transcribed.
+        messages: The voices of one sender, oldest first.
 
     Returns:
-        A compact reference such as ``"alice (0:42)"``.
+        A compact reference such as ``"alice (0:42)"`` or ``"alice (3 voices, 2:07)"``.
     """
-    voice = getattr(message, "voice", None)
-    duration = _format_voice_duration(getattr(voice, "duration", 0))
-    return f"{_get_sender_label(message)} ({duration})"
+    count = f"{len(messages)} voices, " if len(messages) > 1 else ""
+    return f"{_get_sender_label(messages[-1])} ({count}{_total_duration(messages)})"
 
 
-def _build_markdown_filename(message: Message) -> str:
-    """Prefix the voice timestamp so files sort chronologically on any platform."""
-    sent_at = getattr(message, "date", None)
+def _build_markdown_filename(messages: list[Message]) -> str:
+    """Prefix the first voice's timestamp so files sort chronologically on any platform."""
+    sent_at = getattr(messages[0], "date", None)
     if not isinstance(sent_at, datetime):
         sent_at = datetime.now()
-    sender = re.sub(r"[^\w-]+", "_", _get_sender_label(message))[:80].strip("_-") or "voice"
-    minutes, seconds = _format_voice_duration(getattr(message.voice, "duration", 0)).split(":")
+    sender = re.sub(r"[^\w-]+", "_", _get_sender_label(messages[0]))[:80].strip("_-") or "voice"
+    minutes, seconds = _total_duration(messages).split(":")
     return f"{sent_at:%Y%m%d_%Hh%Mm}_{sender}_{minutes}m{seconds}s.md"
 
 
 def _build_markdown_document(
-    message: Message, original_text: str, rephrased_text: str | None, rephrase_notice: str = ""
+    transcripts: list[VoiceTranscript], rephrased_text: str | None, rephrase_notice: str = ""
 ) -> str:
     """Keep both complete versions, including paragraphs, in a single document."""
+    messages = [transcript.message for transcript in transcripts]
     # Keep user-controlled names on one metadata line and escape Markdown syntax.
-    sender = re.sub(r"([\\`*_{}\[\]<>()#!|])", r"\\\1", " ".join(_get_sender_label(message).split()))
-    duration = _format_voice_duration(getattr(message.voice, "duration", 0))
+    sender = re.sub(r"([\\`*_{}\[\]<>()#!|])", r"\\\1", " ".join(_get_sender_label(messages[0]).split()))
+    if len(transcripts) == 1:
+        original_section = transcripts[0].text
+        voices_line = ""
+    else:
+        original_section = "\n\n".join(
+            f"### Voice {index} ({_format_voice_duration(_voice_seconds(transcript.message))})\n\n{transcript.text}"
+            for index, transcript in enumerate(transcripts, start=1)
+        )
+        voices_line = f"  \nVoices: {len(transcripts)}"
     rephrased_section = rephrased_text if rephrased_text is not None else f"> {rephrase_notice}"
     return (
         f"# Voice transcription\n\n"
-        f"Sender: {sender}  \nDuration: {duration}\n\n"
-        f"## Original transcription\n\n{original_text}\n\n"
+        f"Sender: {sender}  \nDuration: {_total_duration(messages)}{voices_line}\n\n"
+        f"## Original transcription\n\n{original_section}\n\n"
         f"## Rephrased version\n\n{rephrased_section}\n"
     )
+
+
+def _split_for_telegram(text: str, limit: int = INLINE_CHUNK_CHARS) -> list[str]:
+    """Split text into message-sized parts without losing its paragraphs.
+
+    Whole paragraphs are packed into parts; only a single paragraph longer than
+    the limit is wrapped at word boundaries.
+
+    Args:
+        text: The text to send.
+        limit: Maximum characters per part.
+
+    Returns:
+        The parts in order; at least one (possibly empty) part.
+    """
+    pieces: list[str] = []
+    for paragraph in text.split("\n\n"):
+        if len(paragraph) <= limit:
+            pieces.append(paragraph)
+        else:
+            pieces += textwrap.wrap(paragraph, width=limit, break_long_words=False, break_on_hyphens=False)
+
+    parts: list[str] = []
+    current = ""
+    for piece in pieces:
+        candidate = f"{current}\n\n{piece}" if current else piece
+        if current and len(candidate) > limit:
+            parts.append(current)
+            current = piece
+        else:
+            current = candidate
+    parts.append(current)
+    return parts
 
 
 def _collect_exception_messages(exc: Exception) -> list[str]:
@@ -339,6 +424,61 @@ def _normalize_provider(provider: object, default: ProviderName = "GROQ") -> Pro
     return cast(ProviderName, normalized) if normalized in {"GROQ", "OPENAI"} else default
 
 
+def _load_custom_providers(config: YamlConfig) -> dict[str, CustomProvider]:
+    """Read the user-defined OpenAI-compatible providers from ``api.custom_providers``.
+
+    Entries without a base URL, key or model are skipped with a warning, and
+    names that clash with a built-in provider are ignored.
+
+    Args:
+        config: Parsed YAML configuration.
+
+    Returns:
+        Complete provider entries keyed by their configured name.
+    """
+    raw: object = get_config_value(config, ["api", "custom_providers"], default={})
+    providers: dict[str, CustomProvider] = {}
+    if not isinstance(raw, dict):
+        return providers
+    for raw_name, entry in raw.items():
+        name = str(raw_name).strip()
+        if not isinstance(entry, dict) or not name or name.upper() in BUILTIN_PROVIDERS:
+            logger.warning("Ignoring custom provider %r: invalid entry or reserved name", name)
+            continue
+        provider: CustomProvider = {
+            "base_url": str(entry.get("base_url") or "").strip(),
+            "api_key": str(entry.get("api_key") or "").strip(),
+            "model": str(entry.get("model") or "").strip(),
+            "reasoning_effort": str(entry.get("reasoning_effort") or "").strip(),
+        }
+        if not (provider["base_url"] and provider["api_key"] and provider["model"]):
+            logger.warning("Ignoring custom provider %r: base_url, api_key and model are required", name)
+            continue
+        providers[name] = provider
+    return providers
+
+
+def _normalize_rephrase_provider(provider: object, custom_providers: dict[str, CustomProvider]) -> str:
+    """Resolve the rephrasing provider to GROQ, OPENAI or a custom provider name.
+
+    Custom names match case-insensitively; unknown names fall back to GROQ.
+
+    Args:
+        provider: Raw provider value from config.
+        custom_providers: The configured custom providers.
+
+    Returns:
+        ``"GROQ"``, ``"OPENAI"`` or the exact name of a custom provider.
+    """
+    wanted = str(provider or "").strip()
+    for name in custom_providers:
+        if name.lower() == wanted.lower():
+            return name
+    if wanted and wanted.upper() not in BUILTIN_PROVIDERS:
+        logger.warning("Unknown rephrasing provider %r; using GROQ", wanted)
+    return _normalize_provider(wanted, default="GROQ")
+
+
 def _get_provider_candidates(primary_provider: ProviderName, current_config: RuntimeConfig) -> list[ProviderName]:
     """Return provider order, with optional automatic fallback if both keys are present.
 
@@ -404,7 +544,7 @@ def _transcribe_with_provider(
 
 
 def _rephrase_with_provider(
-    provider: ProviderName,
+    provider: str,
     current_config: RuntimeConfig,
     groq_client: Groq | None,
     openai_client: openai.OpenAI | None,
@@ -414,20 +554,28 @@ def _rephrase_with_provider(
     """Run the rephrasing request with the selected provider.
 
     Args:
-        provider: The provider to use (``GROQ`` or ``OPENAI``).
+        provider: The provider to use (``GROQ``, ``OPENAI`` or a custom provider name).
         current_config: The resolved runtime configuration.
         groq_client: An initialized Groq client (required for the GROQ provider).
         openai_client: An initialized OpenAI client (required for the OPENAI provider).
+            Custom providers build their own client from ``api.custom_providers``.
         system_prompt: The system prompt steering the rephrasing.
         text: The transcript text to rephrase.
 
     Returns:
         A tuple of ``(rephrased_text, provider_label, model_name)``.
     """
-    if provider == "GROQ":
+    custom = current_config["custom_providers"].get(provider)
+    reasoning_effort = ""
+    if custom is not None:
+        client: Any = openai.OpenAI(api_key=custom["api_key"], base_url=custom["base_url"])
+        model = custom["model"]
+        reasoning_effort = custom["reasoning_effort"]
+        provider_name = f"{provider} (Rephrasing)"
+    elif provider == "GROQ":
         if groq_client is None:
             raise RuntimeError("GROQ client is not configured; check the Groq API key")
-        client: Any = groq_client
+        client = groq_client
         model = current_config["rephrase_model_groq"]
         provider_name = "GROQ (Rephrasing)"
     else:
@@ -437,10 +585,12 @@ def _rephrase_with_provider(
         model = current_config["rephrase_model_openai"]
         provider_name = "OPENAI (Rephrasing)"
 
+    # Sent as extra body field so older SDK versions without the parameter still work.
     response = client.chat.completions.create(
         model=model,
         messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": text}],
         stream=False,
+        extra_body={"reasoning_effort": reasoning_effort} if reasoning_effort else None,
     )
 
     content = response.choices[0].message.content
@@ -551,19 +701,30 @@ def get_current_config() -> RuntimeConfig:
         transcription_provider = transcription_provider or provider_root
         rephrase_provider = rephrase_provider or provider_root
 
+    custom_providers = _load_custom_providers(config)
+    resolved_rephrase_provider = _normalize_rephrase_provider(rephrase_provider, custom_providers)
+    rephrase_model_openai = _config_string(config, ["models", "openai", "rephrase"], default="gpt-4o-mini")
+    rephrase_model_groq = _config_string(config, ["models", "groq", "rephrase"], default="openai/gpt-oss-120b")
+    if resolved_rephrase_provider in custom_providers:
+        rephrase_model = custom_providers[resolved_rephrase_provider]["model"]
+    else:
+        rephrase_model = rephrase_model_groq if resolved_rephrase_provider == "GROQ" else rephrase_model_openai
+
     return {
         "transcription_provider": _normalize_provider(transcription_provider, default="GROQ"),
-        "rephrase_provider": _normalize_provider(rephrase_provider, default="GROQ"),
+        "rephrase_provider": resolved_rephrase_provider,
         "openai_api_key": _config_string(config, ["api", "keys", "openai"]),
         "groq_api_key": _config_string(config, ["api", "keys", "groq"]),
+        "custom_providers": custom_providers,
         "transcription_model_openai": _config_string(
             config, ["models", "openai", "transcription"], default="whisper-1"
         ),
-        "rephrase_model_openai": _config_string(config, ["models", "openai", "rephrase"], default="gpt-4o-mini"),
+        "rephrase_model_openai": rephrase_model_openai,
         "transcription_model_groq": _config_string(
             config, ["models", "groq", "transcription"], default="whisper-large-v3"
         ),
-        "rephrase_model_groq": _config_string(config, ["models", "groq", "rephrase"], default="openai/gpt-oss-120b"),
+        "rephrase_model_groq": rephrase_model_groq,
+        "rephrase_model": rephrase_model,
         "transcription_prompt": _config_string(config, ["prompts", "transcription"]),
         "rephrase_prompt": _config_string(config, ["prompts", "rephrase"]),
         "graceful_degradation_enabled": _coerce_bool(
@@ -582,70 +743,71 @@ def get_current_config() -> RuntimeConfig:
             get_config_value(config, ["logging", "verbose"], default=False),
             default=False,
         ),
+        "debounce_quiet_seconds": _coerce_positive_int(
+            get_config_value(config, ["debounce", "quiet_seconds"], default=8),
+            default=8,
+        ),
+        "debounce_max_wait_seconds": _coerce_positive_int(
+            get_config_value(config, ["debounce", "max_wait_seconds"], default=600),
+            default=600,
+        ),
     }
 
 
-async def transcribe_voice(client: Client, message: Message) -> None:
-    """Transcribe a voice message, optionally rephrase it and reply with the text.
-
-    This function handles the complete workflow of voice message processing:
-    1. Downloads the voice message to a temporary file
-    2. Transcribes the audio using the configured API
-    3. Optionally rephrases the transcription for better readability
-    4. Sends the result as a reply to the original message
-    5. Optionally deletes the original voice message
+def _build_clients(current_config: RuntimeConfig) -> tuple[Groq | None, openai.OpenAI | None]:
+    """Create the Groq and OpenAI clients the current configuration may need.
 
     Args:
-        client: The Pyrogram client instance that received the voice message.
-        message: The voice message to transcribe.
+        current_config: The resolved runtime configuration.
+
+    Returns:
+        ``(groq_client, openai_client)``; a client is None when not needed or
+        when its key is missing.
     """
-    # Log that transcription is starting with message details
+    providers = {current_config["transcription_provider"], current_config["rephrase_provider"]}
+    fallback = current_config["provider_fallback_enabled"]
+    groq_client = Groq(api_key=current_config["groq_api_key"]) if (
+        ("GROQ" in providers or fallback) and current_config["groq_api_key"]
+    ) else None
+    openai_client = openai.OpenAI(api_key=current_config["openai_api_key"]) if (
+        ("OPENAI" in providers or fallback) and current_config["openai_api_key"]
+    ) else None
+    return groq_client, openai_client
+
+
+def _sender_key(message: Message) -> SenderKey:
+    """Return the per-chat sender key used to collect a sender's voices."""
+    sender = getattr(message, "from_user", None) or getattr(message, "sender_chat", None)
+    return message.chat.id, int(getattr(sender, "id", 0) or 0)
+
+
+def _delete_voice_wanted(chat_config: ChatConfig, message: Message) -> bool:
+    """Return whether the chat wants this voice deleted after transcription."""
+    key = "delete_outgoing_voice" if message.outgoing else "delete_incoming_voice"
+    return bool(chat_config.get(key, 0))
+
+
+async def _transcribe_message(
+    message: Message,
+    current_config: RuntimeConfig,
+    groq_client: Groq | None,
+    openai_client: openai.OpenAI | None,
+) -> VoiceTranscript | None:
+    """Download and transcribe one voice; report failures in the chat.
+
+    Args:
+        message: The voice message to transcribe.
+        current_config: The resolved runtime configuration.
+        groq_client: An initialized Groq client, or None if unavailable.
+        openai_client: An initialized OpenAI client, or None if unavailable.
+
+    Returns:
+        The transcript, or None when transcription failed (the error reply has
+        already been sent).
+    """
     chat_info = get_chat_info(message.chat)
-    message_direction = "outgoing" if message.outgoing else "incoming"
-
-    # Create a dictionary to collect all logging information
-    log_data: dict[str, object] = {
-        "event": "transcription_start",
-        "chat_info": chat_info,
-        "message_direction": message_direction,
-    }
-
-    logger.info(f"Transcription Process Details: {json.dumps(log_data, indent=2)}")
-
-    # Load current configuration dynamically for each transcription
-    current_config = get_current_config()
-
-    # Initialize API clients based on the current configuration
-    openai_client: openai.OpenAI | None = None
-    groq_client: Groq | None = None
-
-    # Initialize clients only if they're needed
-    needs_groq = (
-        current_config["transcription_provider"] == "GROQ"
-        or current_config["rephrase_provider"] == "GROQ"
-        or current_config["provider_fallback_enabled"]
-    )
-    needs_openai = (
-        current_config["transcription_provider"] == "OPENAI"
-        or current_config["rephrase_provider"] == "OPENAI"
-        or current_config["provider_fallback_enabled"]
-    )
-
-    if needs_groq and current_config["groq_api_key"]:
-        groq_client = Groq(api_key=current_config["groq_api_key"])
-    if needs_openai and current_config["openai_api_key"]:
-        openai_client = openai.OpenAI(api_key=current_config["openai_api_key"])
-
-    chat_config = get_chat_config(str(message.chat.id))
-    markdown_output = bool(chat_config.get("markdown_output", 0))
     tmp_path: str | None = None
-
     try:
-        # Determine if we should delete the voice message after processing
-        delete_voice_flag = (chat_config.get("delete_outgoing_voice", 0) and message.outgoing) or (
-            chat_config.get("delete_incoming_voice", 0) and not message.outgoing
-        )
-
         # Download voice message to a temporary path. The file is closed before
         # Pyrogram writes to it, which avoids Windows file-handle surprises.
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
@@ -656,32 +818,68 @@ async def transcribe_voice(client: Client, message: Message) -> None:
             transcription_result = await _run_transcription_with_recovery(
                 current_config, groq_client, openai_client, audio_file, chat_info
             )
-            transcript = transcription_result["transcript"]
-            provider_name = transcription_result["provider_name"]
-            model_used = transcription_result["model_used"]
-            fallback_used = transcription_result["fallback_used"]
-            provider_used = transcription_result["provider_used"]
-            provider_attempts = transcription_result["provider_attempts"]
 
-        text = str(getattr(transcript, "text", "") or "").strip()
+        provider_used = transcription_result["provider_used"]
+        text = str(getattr(transcription_result["transcript"], "text", "") or "").strip()
         if not text:
             raise RuntimeError(f"{provider_used} returned an empty transcription response")
 
-        verbose_logging = current_config["verbose_logging"]
         log_data = {
             "event": "transcription_completed",
-            "provider": provider_name,
+            "provider": transcription_result["provider_name"],
             "chat_info": chat_info,
-            "model": model_used,
+            "model": transcription_result["model_used"],
             "provider_used": provider_used,
-            "fallback_used": fallback_used,
-            "provider_attempts": provider_attempts,
+            "fallback_used": transcription_result["fallback_used"],
+            "provider_attempts": transcription_result["provider_attempts"],
             "transcription_result_length": len(text),
-            "transcription_result": _log_content(text, verbose_logging),
+            "transcription_result": _log_content(text, current_config["verbose_logging"]),
         }
         logger.info(f"Transcription Process Details: {json.dumps(log_data, indent=2)}")
 
-        original_text = text
+        fallback_notice = ""
+        if transcription_result["fallback_used"]:
+            fallback_notice = (
+                f"\n⚠️ Provider fallback active: {current_config['transcription_provider']} -> {provider_used}"
+            )
+        return VoiceTranscript(message=message, text=text, fallback_notice=fallback_notice)
+    except Exception as e:
+        error_code, error_hint = _classify_provider_error(e)
+        provider = current_config.get("transcription_provider", "UNKNOWN")
+        logger.error(
+            f"Transcription failed in {chat_info}: code={error_code}, provider={provider}, error={str(e)}",
+            exc_info=True,
+        )
+        await message.reply_text(f"❌ Transcription failed: {error_hint} ({provider})")
+        return None
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+            logger.info(f"Temporary file removed for {chat_info}")
+
+
+async def _deliver_transcripts(transcripts: list[VoiceTranscript]) -> None:
+    """Rephrase one or several transcripts of one sender and send a single reply.
+
+    The reply goes to the newest voice. Several transcripts are rephrased
+    together, so the result reads as one message.
+
+    Args:
+        transcripts: Transcripts of one sender in one chat, oldest first.
+    """
+    transcripts = sorted(transcripts, key=lambda transcript: transcript.message.id)
+    messages = [transcript.message for transcript in transcripts]
+    message = messages[-1]
+    chat_info = get_chat_info(message.chat)
+    current_config = get_current_config()
+    chat_config = get_chat_config(str(message.chat.id))
+    markdown_output = bool(chat_config.get("markdown_output", 0))
+    delete_voice_flag = _delete_voice_wanted(chat_config, message)
+    verbose_logging = current_config["verbose_logging"]
+
+    try:
+        original_text = "\n\n".join(transcript.text for transcript in transcripts)
+        text = original_text
         rephrased_text: str | None = None
         rephrase_notice = ""
 
@@ -691,8 +889,8 @@ async def transcribe_voice(client: Client, message: Message) -> None:
             resolved_prompt = resolve_rephrase_prompt(
                 chat_config, "out" if message.outgoing else "in", current_config["rephrase_prompt"]
             )
-            system_prompt = resolved_prompt.text
             logger.info(f"Rephrasing prompt for {chat_info}: {resolved_prompt.label}")
+            groq_client, openai_client = _build_clients(current_config)
 
             try:
                 text, provider, model = await asyncio.to_thread(
@@ -701,8 +899,8 @@ async def transcribe_voice(client: Client, message: Message) -> None:
                     current_config,
                     groq_client,
                     openai_client,
-                    system_prompt,
-                    text,
+                    resolved_prompt.text,
+                    original_text,
                 )
                 rephrased_text = text
                 log_data = {
@@ -711,6 +909,7 @@ async def transcribe_voice(client: Client, message: Message) -> None:
                     "chat_info": chat_info,
                     "type": "rephrasing",
                     "model": model,
+                    "voices": len(transcripts),
                     "rephrasing_input_length": len(original_text),
                     "rephrasing_result_length": len(text),
                     "rephrasing_input": _log_content(original_text, verbose_logging),
@@ -731,16 +930,11 @@ async def transcribe_voice(client: Client, message: Message) -> None:
                 else:
                     raise rephrase_exc
 
-        fallback_notice = ""
-        if fallback_used:
-            fallback_notice = (
-                f"\n⚠️ Provider fallback active: {current_config['transcription_provider']} -> {provider_used}"
-            )
-
-        voice_reference = escape(_build_voice_reference(message))
+        fallback_notice = next((t.fallback_notice for t in transcripts if t.fallback_notice), "")
+        voice_reference = escape(_build_voice_reference(messages))
         if markdown_output:
-            document_text = _build_markdown_document(message, original_text, rephrased_text, rephrase_notice)
-            filename = _build_markdown_filename(message)
+            document_text = _build_markdown_document(transcripts, rephrased_text, rephrase_notice)
+            filename = _build_markdown_filename(messages)
             # The filename already carries sender, time and duration: send only the
             # file and reserve the caption for warnings.
             caption = fallback_notice.strip()
@@ -752,15 +946,13 @@ async def transcribe_voice(client: Client, message: Message) -> None:
                     document, file_name=filename, caption=caption, quote=not delete_voice_flag
                 )
             logger.info(
-                "Markdown document sent in %s: voice_id=%s, document_message_id=%s, "
+                "Markdown document sent in %s: voice_ids=%s, document_message_id=%s, "
                 "filename=%s, original_length=%s, rephrased_length=%s",
-                chat_info, message.id, sent_message.id, filename, len(original_text),
+                chat_info, [m.id for m in messages], sent_message.id, filename, len(original_text),
                 len(rephrased_text) if rephrased_text is not None else None,
             )
         else:
-            # Leave room for the reference, HTML escaping and blockquote tags.
-            text = text.strip(' "')
-            chunks = textwrap.wrap(text, width=3000, break_long_words=False, break_on_hyphens=False)
+            chunks = _split_for_telegram(text.strip(' "'))
             for i, chunk in enumerate(chunks):
                 part_reference = f" Part {i + 1}/{len(chunks)}" if len(chunks) > 1 else ""
                 first_chunk_notice = fallback_notice if i == 0 else ""
@@ -772,23 +964,75 @@ async def transcribe_voice(client: Client, message: Message) -> None:
                 # Quote only on the first part if the voice will be kept.
                 await message.reply_text(txt, quote=(i == 0) and not delete_voice_flag)
 
-        # Delete the original voice message if configured to do so
-        if delete_voice_flag:
-            await message.delete()
+        # Delete the original voice messages if configured to do so
+        for voice_message in messages:
+            if _delete_voice_wanted(chat_config, voice_message):
+                await voice_message.delete()
 
     except Exception as e:
-        chat_info = get_chat_info(message.chat)
         error_code, error_hint = _classify_provider_error(e)
-        provider = current_config.get("transcription_provider", "UNKNOWN")
-        error_msg = f"❌ Transcription failed: {error_hint} ({provider})"
-        logger.error(
-            f"Transcription failed in {chat_info}: code={error_code}, provider={provider}, error={str(e)}",
-            exc_info=True,
+        logger.error(f"Sending the transcription failed in {chat_info}: code={error_code}, error={e}", exc_info=True)
+        await message.reply_text(f"❌ Transcription failed: {error_hint} ({current_config['rephrase_provider']})")
+
+
+# Holds rephrasing per sender while they keep sending voices (per-chat setting).
+_collector: DebounceCollector[VoiceTranscript] = DebounceCollector(_deliver_transcripts)
+
+
+def note_recording_update(update: object) -> None:
+    """Feed a raw Telegram update into the debounce collector.
+
+    Only "recording voice" status changes matter; every other update is ignored.
+
+    Args:
+        update: Any raw update received by the client.
+    """
+    status = recording_status_from_update(update)
+    if status is not None:
+        (chat_id, user_id), active = status
+        logger.info(f"Voice recording {'started' if active else 'cancelled'}: chat={chat_id}, user={user_id}")
+        _collector.note_recording(*status)
+
+
+async def transcribe_voice(client: Client, message: Message) -> None:
+    """Transcribe a voice message, optionally rephrase it and reply with the text.
+
+    This function handles the complete workflow of voice message processing:
+    1. Downloads the voice message and transcribes it with the configured API
+    2. With debouncing on, holds the transcript until the sender stops sending
+       voices, then rephrases all collected transcripts together
+    3. Otherwise rephrases (if enabled) and replies right away
+    4. Optionally deletes the original voice message(s)
+
+    Args:
+        client: The Pyrogram client instance that received the voice message.
+        message: The voice message to transcribe.
+    """
+    chat_info = get_chat_info(message.chat)
+    log_data: dict[str, object] = {
+        "event": "transcription_start",
+        "chat_info": chat_info,
+        "message_direction": "outgoing" if message.outgoing else "incoming",
+    }
+    logger.info(f"Transcription Process Details: {json.dumps(log_data, indent=2)}")
+
+    # Load current configuration dynamically for each transcription
+    current_config = get_current_config()
+    chat_config = get_chat_config(str(message.chat.id))
+    # Debouncing only delays rephrased output; plain transcripts are sent at once.
+    debounce = bool(chat_config.get("rephrase_debounce", 0)) and bool(
+        chat_config.get("markdown_output", 0) or chat_config.get("rephrasing", 1)
+    )
+    key = _sender_key(message)
+    if debounce:
+        _collector.voice_started(
+            key, current_config["debounce_quiet_seconds"], current_config["debounce_max_wait_seconds"]
         )
-        await message.reply_text(error_msg)
-    finally:
-        # Clean up temporary file
-        chat_info = get_chat_info(message.chat)
-        if tmp_path and os.path.exists(tmp_path):
-            os.remove(tmp_path)
-            logger.info(f"Temporary file removed for {chat_info}")
+
+    groq_client, openai_client = _build_clients(current_config)
+    transcript = await _transcribe_message(message, current_config, groq_client, openai_client)
+    if debounce:
+        _collector.voice_finished(key, transcript)
+        logger.info(f"Transcript held for debouncing in {chat_info} (sender {key[1]})")
+    elif transcript is not None:
+        await _deliver_transcripts([transcript])

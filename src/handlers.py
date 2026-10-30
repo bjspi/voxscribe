@@ -115,6 +115,7 @@ Available Commands:
 /tin         Toggle transcription for incoming voices.
 /tout        Toggle transcription for outgoing voices.
 /rephrase    Toggle rephrasing of transcriptions.
+/debounce [on|off] Collect a sender's consecutive voices, rephrase together.
 /tmd [on|off] Markdown file: original + rephrased (default off).
 /delin       Toggle deletion of incoming voices.
 /delout      Toggle deletion of outgoing voices.
@@ -175,6 +176,7 @@ def build_chat_config_text(chat_id: str, chat_config: ChatConfig, default_prompt
         ("  Outgoing", icon(chat_config.get("transcription_out", 1)), "/tout"),
         ("Output", "📄 Markdown file" if markdown else "💬 inline text", "/tmd on|off"),
         ("Rephrasing", icon(chat_config.get("rephrasing", 1)), "/rephrase"),
+        ("  Collect", icon(chat_config.get("rephrase_debounce", 0)), "/debounce on|off"),
         ("Delete voice", "", ""),
         ("  Incoming", icon(chat_config.get("delete_incoming_voice", 0)), "/delin"),
         ("  Outgoing", icon(chat_config.get("delete_outgoing_voice", 0)), "/delout"),
@@ -441,6 +443,32 @@ async def toggle_markdown_output(client: Client, message: Message) -> None:
     detail = " One .md file per voice with original + rephrased text." if enabled else " Sending text messages."
     logger.info("Markdown output %s in %s", status, get_chat_info(message.chat))
     await send_and_delete_message(client, message, f"<pre>Markdown output {status} for this chat.{detail}</pre>", 5)
+
+
+async def toggle_debounce(client: Client, message: Message) -> None:
+    """Toggle debounce + collect for rephrasing in this chat, or explicitly set on/off."""
+    argument = _command_argument(message).strip().lower()
+    if argument not in {"", "on", "off"}:
+        await send_and_delete_message(client, message, "<pre>Usage: /debounce [on|off]</pre>", 5)
+        return
+
+    chat_id = _chat_id(message)
+    config = _ensure_chat_settings(message)
+    enabled = argument == "on" if argument else not config[chat_id].get("rephrase_debounce", 0)
+    config[chat_id]["rephrase_debounce"] = int(enabled)
+    if not save_chat_settings(config):
+        await send_and_delete_message(client, message, "<pre>Could not save the debounce setting.</pre>", 5)
+        return
+
+    status = "enabled" if enabled else "disabled"
+    detail = (
+        " Voices are transcribed at once; the rephrased reply waits until the sender"
+        " stops sending/recording voices and then covers all of them."
+        if enabled
+        else " Every voice gets its own reply."
+    )
+    logger.info("Rephrasing debounce %s in %s", status, get_chat_info(message.chat))
+    await send_and_delete_message(client, message, f"<pre>Debounce + collect {status}.{detail}</pre>", 5)
 
 
 async def toggle_voice_delete(client: Client, message: Message) -> None:

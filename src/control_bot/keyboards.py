@@ -14,6 +14,7 @@ two letters because template keys (up to 24 characters) ride along.
 - ``tdir|<cid>|<in|out|both>``   — set the transcription direction (/tin, /tout)
 - ``tmd|<cid>|<0|1>``            — output: 0 = inline text, 1 = Markdown file (/tmd)
 - ``rephrase|<cid>``             — toggle AI rephrasing (/rephrase)
+- ``deb|<cid>``                  — toggle debounce + collect (/debounce)
 - ``del|<cid>|<in|out>``         — toggle deleting the voice afterwards (/delin, /delout)
 - ``prompts|<cid>``              — the chat's prompt screen (/prompts)
 - ``pp|<cid>|<in|out|both>``     — prompt picker for one direction (or both)
@@ -34,6 +35,7 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from src.control_bot.chats import ChatRef
 from src.control_bot.common import (
     chat_label,
+    debounce_on,
     direction_of,
     is_enabled,
     rephrasing_on,
@@ -133,6 +135,7 @@ def chat_detail_keyboard(chat_id: str, chat_config: ChatConfig, back_page: int =
         ],
         [_btn("— Rephrasing —", "nop")],
         [_btn(_mark(rephrasing_on(chat_config), "🧠 AI rephrasing"), f"rephrase|{cid}")],
+        [_btn(_mark(debounce_on(chat_config), "⏳ Collect follow-up voices"), f"deb|{cid}")],
         [_btn("— Delete voice after transcription —", "nop")],
         [
             _btn(_mark(delete_in, "🗑 Incoming"), f"del|{cid}|in"),

@@ -164,10 +164,10 @@ class MarkdownTranscriptionTests(unittest.IsolatedAsyncioTestCase):
         self.message.from_user.username = None
         self.message.from_user.first_name = '../Alex: <Test>\\Name\n'
         self.message.voice.duration = 65
-        self.assertEqual(_build_markdown_filename(self.message), "20260907_08h43m_Alex_Test_Name_Example_1m05s.md")
+        self.assertEqual(_build_markdown_filename([self.message]), "20260907_08h43m_Alex_Test_Name_Example_1m05s.md")
         self.message.from_user.first_name = None
         self.message.from_user.last_name = None
-        self.assertEqual(_build_markdown_filename(self.message), "20260907_08h43m_2_1m05s.md")
+        self.assertEqual(_build_markdown_filename([self.message]), "20260907_08h43m_2_1m05s.md")
 
     def test_filename_uses_current_time_when_message_date_is_missing(self) -> None:
         self.message.date = None
@@ -179,7 +179,7 @@ class MarkdownTranscriptionTests(unittest.IsolatedAsyncioTestCase):
                 return datetime(2026, 1, 2, 3, 4)
 
         with patch("src.transcription.datetime", FrozenDatetime):
-            self.assertEqual(_build_markdown_filename(self.message), "20260102_03h04m_alex_test_1m05s.md")
+            self.assertEqual(_build_markdown_filename([self.message]), "20260102_03h04m_alex_test_1m05s.md")
 
 
 class MarkdownSettingsTests(unittest.IsolatedAsyncioTestCase):

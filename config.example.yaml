@@ -21,7 +21,8 @@ control_bot:
   owner_id: 0
 
 # API Provider Configuration
-# Options: "GROQ" or "OPENAI"
+# Options: "GROQ" or "OPENAI". Rephrasing additionally accepts the name of any
+# entry under custom_providers below.
 api:
   provider:
     transcription: "GROQ"
@@ -29,6 +30,16 @@ api:
   keys:
     openai: ""
     groq: ""
+  # Your own OpenAI-compatible chat endpoints for rephrasing (e.g. a Gemini
+  # gateway, OpenRouter or a local model). Pick one by its name in
+  # provider.rephrase. base_url, api_key and model are required;
+  # reasoning_effort (e.g. low/medium/high) is optional and omitted when empty.
+  custom_providers: {}
+  #  gemini:
+  #    base_url: "https://example.com/v1"
+  #    api_key: ""
+  #    model: "gemini-3.8-flash-high"
+  #    reasoning_effort: "low"
 
 # Recovery behaviour
 recovery:
@@ -78,6 +89,17 @@ models:
   groq:
     transcription: "whisper-large-v3"
     rephrase: "openai/gpt-oss-120b"
+
+# Debounce + collect (per chat: /debounce on|off or the control bot; default off).
+# Each voice is transcribed at once, but the rephrased reply waits while the
+# same sender keeps sending or recording voices; then all of them are rephrased
+# together into one reply. Telegram does not report your own recording status,
+# so your own voices only wait for the quiet window.
+debounce:
+  # Send once the sender has neither sent nor recorded a voice for this long.
+  quiet_seconds: 8
+  # Send at the latest this long after the first collected voice.
+  max_wait_seconds: 600
 
 # System prompts
 #

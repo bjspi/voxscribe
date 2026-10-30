@@ -11,6 +11,7 @@ from html import escape
 from src.control_bot.common import (
     DIRECTION_LABELS,
     chat_label,
+    debounce_on,
     direction_of,
     fit_message,
     is_enabled,
@@ -78,6 +79,8 @@ def _summary_chips(chat_config: ChatConfig) -> str:
     chips = [direction_of(chat_config), "📄 md" if uses_markdown(chat_config) else "💬 text"]
     if rephrasing_on(chat_config) or uses_markdown(chat_config):
         chips.append("🧠")
+    if debounce_on(chat_config):
+        chips.append("⏳")
     if chat_config.get("delete_incoming_voice") or chat_config.get("delete_outgoing_voice"):
         chips.append("🗑")
     return " · ".join(chips)
@@ -96,7 +99,7 @@ def render_overview_text(
     transcription_provider = str(runtime.get("transcription_provider", "?"))
     rephrase_provider = str(runtime.get("rephrase_provider", "?"))
     transcription_model = str(runtime.get(f"transcription_model_{transcription_provider.lower()}", "?"))
-    rephrase_model = str(runtime.get(f"rephrase_model_{rephrase_provider.lower()}", "?"))
+    rephrase_model = str(runtime.get("rephrase_model", "?"))
 
     lines = [
         "📊 <b>Voice Transcriber — Status</b>",
@@ -150,6 +153,7 @@ def render_chat_detail_text(
         f"<b>Direction:</b> {_direction_word(direction_of(chat_config))}\n"
         f"<b>Output:</b> {output}\n"
         f"<b>Rephrasing:</b> {rephrasing}\n"
+        f"<b>Collect follow-up voices:</b> {_yes_no(debounce_on(chat_config))}\n"
         f"<b>Delete voice:</b> incoming {_yes_no(chat_config.get('delete_incoming_voice'))} · "
         f"outgoing {_yes_no(chat_config.get('delete_outgoing_voice'))}\n"
         f"<b>Prompt in:</b> {escape(prompt_in.label)}\n"

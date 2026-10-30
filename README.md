@@ -153,7 +153,7 @@ telegram:
 api:
   provider:
     transcription: "GROQ"     # GROQ or OPENAI
-    rephrase: "GROQ"          # GROQ or OPENAI
+    rephrase: "GROQ"          # GROQ, OPENAI or a custom_providers name
   keys:
     openai: ""                # required if using OPENAI
     groq: ""                  # required if using GROQ
@@ -240,6 +240,35 @@ api:
 >   provider: "GROQ"          # used for transcription AND rephrasing
 > ```
 
+### 🔌 Custom OpenAI-compatible rephrasing
+
+Rephrasing can also use your own OpenAI-compatible chat endpoints, for example a
+Gemini gateway, OpenRouter or a self-hosted model. Define as many as you like and
+pick one by name. Transcription keeps using Groq or OpenAI:
+
+```yaml
+api:
+  provider:
+    transcription: "GROQ"
+    rephrase: "gemini"        # name of an entry below
+  custom_providers:
+    gemini:
+      base_url: "https://example.com/v1"
+      api_key: "your-endpoint-key"
+      model: "gemini-3.8-flash-high"
+      reasoning_effort: "low" # optional, omitted when empty
+```
+
+### ⏳ Debounce + collect
+
+People often send several voices in a row. With `/debounce on` (or the control
+bot's *Collect follow-up voices* button) every voice is still transcribed right
+away, but the rephrased reply waits while the same sender keeps sending or
+recording voices. Once they have been quiet for `debounce.quiet_seconds`, all
+their voices are rephrased together into one reply to the last voice. Off by
+default; set per chat. Telegram does not report your own recording status, so
+your own voices only wait for the quiet window.
+
 ### 🔑 Getting your keys
 
 | Service | Where | Notes |
@@ -309,6 +338,7 @@ them invisible to your partner.
 | `/tin` | Toggle transcription of **incoming** voices |
 | `/tout` | Toggle transcription of **outgoing** voices |
 | `/rephrase` | Toggle AI rephrasing of transcriptions |
+| `/debounce [on\|off]` | Collect a sender's consecutive voices and rephrase them together (default: off) |
 | `/tmd [on\|off]` | Toggle Markdown attachments for this chat, or explicitly enable/disable them (default: off) |
 | `/delin` | Toggle deletion of **incoming** voices after transcription |
 | `/delout` | Toggle deletion of **outgoing** voices after transcription |
@@ -359,6 +389,7 @@ Transcription ✅ on             /ton · /toff
   Outgoing    ✅ on             /tout
 Output        💬 inline text    /tmd on|off
 Rephrasing    ✅ on             /rephrase
+  Collect     ❌ off            /debounce on|off
 Delete voice
   Incoming    ❌ off            /delin
   Outgoing    ❌ off            /delout
@@ -585,6 +616,7 @@ your private chats) and written atomically, with a `.json.backup` kept alongside
         "transcription_out": 1,    // transcribe your own voices     (/tout)
         "rephrasing": 0,           // AI rephrasing on/off           (/rephrase)
         "markdown_output": 0,      // one .md: original + rephrased  (/tmd)
+        "rephrase_debounce": 0,    // collect follow-up voices        (/debounce)
         "delete_incoming_voice": 0,// delete incoming after text     (/delin)
         "delete_outgoing_voice": 0,// delete outgoing after text     (/delout)
         "rephrase_prompt": "",     // legacy/global custom prompt
