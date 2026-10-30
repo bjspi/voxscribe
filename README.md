@@ -255,7 +255,7 @@ api:
     gemini:
       base_url: "https://example.com/v1"
       api_key: "your-endpoint-key"
-      model: "gemini-3.8-flash-high"
+      model: "gemini-2.5-flash"
       reasoning_effort: "low" # optional, omitted when empty
 ```
 
