@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from html import escape
 from io import BytesIO
-from typing import Any, BinaryIO, Literal, TypedDict, cast
+from typing import Any, Literal, TypedDict, cast
 
 import openai
 from groq import Groq
@@ -23,6 +23,15 @@ from src.debounce import DebounceCollector, SenderKey, recording_status_from_upd
 from src.helpers import ChatConfig, YamlConfig, get_chat_config, get_chat_info, get_config_value, load_bot_config
 from src.logging import get_logger
 from src.prompts import resolve_rephrase_prompt
+from src.quality import (
+    Candidate,
+    QualitySettings,
+    SecondPassMode,
+    candidate_from_response,
+    choose,
+    is_doubtful,
+    is_probably_silence,
+)
 
 # Set up logging
 logger = get_logger(__name__)
@@ -30,6 +39,10 @@ logger = get_logger(__name__)
 # When verbose logging is off, message content is logged only up to this many
 # characters (privacy + smaller log files).
 LOG_PREVIEW_CHARS = 200
+
+# Parallel second passes still running after a confident first result; asyncio
+# keeps only weak references to tasks, so they must be held until done.
+_background_tasks: set[asyncio.Task[Candidate | None]] = set()
 
 # The bot's own replies start with these; they are no reason to send held voices.
 BOT_REPLY_PREFIXES = ("📝", "❌", "🔇", "⚠️")
@@ -39,6 +52,8 @@ BOT_REPLY_PREFIXES = ("📝", "❌", "🔇", "⚠️")
 INLINE_CHUNK_CHARS = 3000
 
 ProviderName = Literal["GROQ", "OPENAI"]
+# (filename, content) as accepted by the Groq and OpenAI SDKs for uploads.
+AudioUpload = tuple[str, bytes]
 BUILTIN_PROVIDERS = ("GROQ", "OPENAI")
 ProviderErrorCode = Literal[
     "dns",
@@ -83,6 +98,7 @@ class RuntimeConfig(TypedDict):
     verbose_logging: bool
     debounce_quiet_seconds: int
     debounce_max_wait_seconds: int
+    quality: QualitySettings
 
 
 class ProviderAttempt(TypedDict):
@@ -510,40 +526,47 @@ def _transcribe_with_provider(
     current_config: RuntimeConfig,
     groq_client: Groq | None,
     openai_client: openai.OpenAI | None,
-    audio_file: BinaryIO,
+    audio: AudioUpload,
+    prompt: str | None = None,
 ) -> tuple[Any, str, str]:
     """Run the transcription request with the selected provider.
+
+    Whisper models are asked for ``verbose_json`` while the quality fallback is
+    on, so the response carries log-probabilities.
 
     Args:
         provider: The provider to use (``GROQ`` or ``OPENAI``).
         current_config: The resolved runtime configuration.
         groq_client: An initialized Groq client (required for the GROQ provider).
         openai_client: An initialized OpenAI client (required for the OPENAI provider).
-        audio_file: The opened audio file to transcribe.
+        audio: The voice file as ``(filename, content)``.
+        prompt: Prompt override; None uses ``prompts.transcription``.
 
     Returns:
         A tuple of ``(transcript, provider_label, model_name)``.
     """
-    audio_file.seek(0)
-
     if provider == "GROQ":
         if groq_client is None:
             raise RuntimeError("GROQ client is not configured; check the Groq API key")
-        transcript: Any = groq_client.audio.transcriptions.create(
-            model=current_config["transcription_model_groq"],
-            file=audio_file,
-            prompt=current_config["transcription_prompt"],
-        )
-        return transcript, "GROQ (Transcription)", current_config["transcription_model_groq"]
+        client: Any = groq_client
+        model = current_config["transcription_model_groq"]
+    else:
+        if openai_client is None:
+            raise RuntimeError("OpenAI client is not configured; check the OpenAI API key")
+        client = openai_client
+        model = current_config["transcription_model_openai"]
 
-    if openai_client is None:
-        raise RuntimeError("OpenAI client is not configured; check the OpenAI API key")
-    transcript = openai_client.audio.transcriptions.create(
-        model=current_config["transcription_model_openai"],
-        file=audio_file,
-        prompt=current_config["transcription_prompt"],
+    options: dict[str, Any] = {}
+    # Only Whisper models offer verbose_json (the GPT transcribe models reject it).
+    if current_config["quality"].second_pass != "off" and model.lower().startswith("whisper"):
+        options["response_format"] = "verbose_json"
+    transcript = client.audio.transcriptions.create(
+        model=model,
+        file=audio,
+        prompt=current_config["transcription_prompt"] if prompt is None else prompt,
+        **options,
     )
-    return transcript, "OPENAI (Transcription)", current_config["transcription_model_openai"]
+    return transcript, f"{provider} (Transcription)", model
 
 
 def _rephrase_with_provider(
@@ -607,7 +630,7 @@ async def _run_transcription_with_recovery(
     current_config: RuntimeConfig,
     groq_client: Groq | None,
     openai_client: openai.OpenAI | None,
-    audio_file: BinaryIO,
+    audio: AudioUpload,
     chat_info: str,
 ) -> TranscriptionRecoveryResult:
     """Retry transcription on the primary provider and optionally fall back to the alternate one.
@@ -616,7 +639,7 @@ async def _run_transcription_with_recovery(
         current_config: The resolved runtime configuration.
         groq_client: An initialized Groq client, or None if unavailable.
         openai_client: An initialized OpenAI client, or None if unavailable.
-        audio_file: The opened audio file to transcribe.
+        audio: The voice file as ``(filename, content)``.
         chat_info: Human-readable chat identifier for logging.
 
     Returns:
@@ -641,7 +664,7 @@ async def _run_transcription_with_recovery(
                     current_config,
                     groq_client,
                     openai_client,
-                    audio_file,
+                    audio,
                 )
                 return {
                     "transcript": transcript,
@@ -683,6 +706,27 @@ async def _run_transcription_with_recovery(
     raise RuntimeError(
         f"TRANSCRIPTION_FAILED[{last_error_code}] primary={primary_provider} attempts={details}"
     ) from last_error
+
+
+def _quality_settings(config: YamlConfig) -> QualitySettings:
+    """Read the ``transcription_quality`` section; invalid values fall back to the defaults."""
+    defaults = QualitySettings()
+    mode = str(get_config_value(config, ["transcription_quality", "second_pass"], default="off") or "off")
+    mode = mode.strip().lower()
+    try:
+        threshold = float(get_config_value(config, ["transcription_quality", "logprob_threshold"], default=-0.5))
+    except (TypeError, ValueError):
+        threshold = defaults.logprob_threshold
+    try:
+        min_chars = max(0, int(get_config_value(config, ["transcription_quality", "min_chars"], default=0) or 0))
+    except (TypeError, ValueError):
+        min_chars = defaults.min_chars
+    return QualitySettings(
+        second_pass=cast(SecondPassMode, mode) if mode in ("off", "doubtful", "always") else defaults.second_pass,
+        logprob_threshold=threshold,
+        min_chars=min_chars,
+        second_pass_prompt=_config_string(config, ["transcription_quality", "second_pass_prompt"]),
+    )
 
 
 def get_current_config() -> RuntimeConfig:
@@ -754,6 +798,7 @@ def get_current_config() -> RuntimeConfig:
             get_config_value(config, ["debounce", "max_wait_seconds"], default=300),
             default=300,
         ),
+        "quality": _quality_settings(config),
     }
 
 
@@ -784,6 +829,37 @@ def _sender_key(message: Message) -> SenderKey:
     return message.chat.id, int(getattr(sender, "id", 0) or 0)
 
 
+async def _second_pass(
+    provider: ProviderName,
+    current_config: RuntimeConfig,
+    groq_client: Groq | None,
+    openai_client: openai.OpenAI | None,
+    audio: AudioUpload,
+    chat_info: str,
+) -> Candidate | None:
+    """Transcribe the voice again with the second-pass prompt (single attempt).
+
+    Returns:
+        The second result, or None if the request failed (the first result is then kept).
+    """
+    try:
+        transcript, _, _ = await asyncio.to_thread(
+            _transcribe_with_provider,
+            provider,
+            current_config,
+            groq_client,
+            openai_client,
+            audio,
+            current_config["quality"].second_pass_prompt,
+        )
+    except Exception as exc:
+        logger.warning(f"Transcription second pass failed in {chat_info}: {exc}")
+        return None
+    candidate = candidate_from_response(transcript)
+    logger.info(f"Transcription second pass result in {chat_info}: {candidate.describe()}")
+    return candidate
+
+
 def _delete_voice_wanted(chat_config: ChatConfig, message: Message) -> bool:
     """Return whether the chat wants this voice deleted after transcription."""
     key = "delete_outgoing_voice" if message.outgoing else "delete_incoming_voice"
@@ -805,11 +881,13 @@ async def _transcribe_message(
         openai_client: An initialized OpenAI client, or None if unavailable.
 
     Returns:
-        The transcript, or None when transcription failed (the error reply has
-        already been sent).
+        The transcript, or None when transcription failed or found no speech
+        (the reply saying so has already been sent).
     """
     chat_info = get_chat_info(message.chat)
+    quality = current_config["quality"]
     tmp_path: str | None = None
+    second_task: asyncio.Task[Candidate | None] | None = None
     try:
         # Download voice message to a temporary path. The file is closed before
         # Pyrogram writes to it, which avoids Windows file-handle surprises.
@@ -818,12 +896,35 @@ async def _transcribe_message(
 
         await message.download(file_name=tmp_path)
         with open(tmp_path, "rb") as audio_file:
-            transcription_result = await _run_transcription_with_recovery(
-                current_config, groq_client, openai_client, audio_file, chat_info
+            audio: AudioUpload = (os.path.basename(tmp_path), audio_file.read())
+
+        if quality.second_pass == "always":
+            primary = _normalize_provider(current_config["transcription_provider"])
+            second_task = asyncio.create_task(
+                _second_pass(primary, current_config, groq_client, openai_client, audio, chat_info)
             )
+        transcription_result = await _run_transcription_with_recovery(
+            current_config, groq_client, openai_client, audio, chat_info
+        )
 
         provider_used = transcription_result["provider_used"]
-        text = str(getattr(transcription_result["transcript"], "text", "") or "").strip()
+        candidate = candidate_from_response(transcription_result["transcript"])
+        if quality.second_pass != "off":
+            logger.info(f"Transcription quality in {chat_info}: {candidate.describe()}")
+            if is_doubtful(candidate, quality):
+                if second_task is None:
+                    second_task = asyncio.create_task(
+                        _second_pass(provider_used, current_config, groq_client, openai_client, audio, chat_info)
+                    )
+                second = await second_task
+                candidate, chosen = choose(candidate, second, quality)
+                logger.info(f"Transcription second pass in {chat_info}: chosen={chosen} {candidate.describe()}")
+            if is_probably_silence(candidate, quality):
+                logger.info(f"No speech recognized in {chat_info}: {candidate.describe()}")
+                await message.reply_text("🔇 No speech recognized.")
+                return None
+
+        text = candidate.text
         if not text:
             raise RuntimeError(f"{provider_used} returned an empty transcription response")
 
@@ -845,8 +946,13 @@ async def _transcribe_message(
             fallback_notice = (
                 f"\n⚠️ Provider fallback active: {current_config['transcription_provider']} -> {provider_used}"
             )
+        if second_task is not None and not second_task.done():
+            _background_tasks.add(second_task)
+            second_task.add_done_callback(_background_tasks.discard)
         return VoiceTranscript(message=message, text=text, fallback_notice=fallback_notice)
     except Exception as e:
+        if second_task is not None and not second_task.done():
+            second_task.cancel()
         error_code, error_hint = _classify_provider_error(e)
         provider = current_config.get("transcription_provider", "UNKNOWN")
         logger.error(

@@ -103,6 +103,24 @@ debounce:
   # Everyone: send at the latest this long after the first collected voice.
   max_wait_seconds: 300
 
+# Quality fallback for transcriptions (Whisper models only; they report
+# log-probabilities via verbose_json). A second transcription of the same voice
+# with second_pass_prompt (empty = no prompt) can replace a doubtful result:
+# empty, shorter than min_chars, or with an average log-probability below
+# logprob_threshold. The first result is kept unless it is doubtful and the
+# second one is more confident. A doubtful result that is most likely silence
+# (no_speech_prob >= 0.6) is answered with "No speech recognized" instead of
+# the text Whisper tends to invent for silence.
+transcription_quality:
+  # "off" | "doubtful" (second request only for doubtful results) |
+  # "always" (both requests in parallel; costs a second request every time)
+  second_pass: "off"
+  # 0 = certain; good Whisper results are around -0.1 to -0.3, garbled ones below -0.5.
+  logprob_threshold: -0.5
+  # Results shorter than this many characters count as doubtful (0 = off).
+  min_chars: 0
+  second_pass_prompt: ""
+
 # System prompts
 #
 # IMPORTANT: Tune these two prompts to your own needs — they have the biggest

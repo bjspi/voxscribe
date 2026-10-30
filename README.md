@@ -273,6 +273,27 @@ until you post anything that is not a voice (text, sticker, a command), someone
 else writes in the chat, or you send `/go`. After `debounce.max_wait_seconds`
 (default 5 minutes) a batch is sent in any case.
 
+### 🎯 Quality fallback
+
+Whisper sometimes garbles a voice because of the transcription prompt, or
+invents a sentence for silence ("Thanks for watching!"). Set
+`transcription_quality.second_pass` to `doubtful` and a doubtful result (empty,
+shorter than `min_chars`, or an average log-probability below
+`logprob_threshold`) is transcribed a second time with `second_pass_prompt`
+(empty = no prompt). The more confident result wins; the first one is kept when
+it is not doubtful, so the prompt still helps with names and jargon. `always`
+sends both requests in parallel, which saves the wait for doubtful results but
+costs a second request for every voice. A doubtful result that is most likely
+silence gets a short "No speech recognized" reply instead of invented text.
+
+```yaml
+transcription_quality:
+  second_pass: "doubtful"     # off | doubtful | always
+  logprob_threshold: -0.5
+  min_chars: 0
+  second_pass_prompt: ""
+```
+
 ### 🔑 Getting your keys
 
 | Service | Where | Notes |
