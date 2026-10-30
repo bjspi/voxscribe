@@ -6,7 +6,9 @@ from them restarts the quiet window. Once the window passes without either,
 all collected transcripts of that sender are handed over in one batch.
 
 Telegram only reports other users' recording status, never your own (from
-another device), so your own voices rely on the quiet window alone.
+another device). Your own voices therefore have no quiet window: they are held
+until something else happens in the chat (see ``request_flush``) or the
+maximum wait runs out.
 """
 
 from __future__ import annotations
@@ -37,11 +39,13 @@ _RECORDING_ACTIONS = (raw.types.SendMessageRecordAudioAction, raw.types.SendMess
 class _Batch[T]:
     """Transcripts of one sender that wait for the sender to stop."""
 
-    quiet_seconds: float
+    # None: no quiet window, wait for request_flush() or the maximum wait.
+    quiet_seconds: float | None
     max_wait_seconds: float
     started_at: float
     last_activity_at: float
     pending: int = 0
+    flush_requested: bool = False
     items: list[T] = field(default_factory=list)
     task: asyncio.Task[None] | None = None
 
@@ -59,12 +63,13 @@ class DebounceCollector[T]:
         self._batches: dict[SenderKey, _Batch[T]] = {}
         self._recording_seen_at: dict[SenderKey, float] = {}
 
-    def voice_started(self, key: SenderKey, quiet_seconds: float, max_wait_seconds: float) -> None:
+    def voice_started(self, key: SenderKey, quiet_seconds: float | None, max_wait_seconds: float) -> None:
         """Register a voice whose transcription is about to start.
 
         Args:
             key: The sender the voice belongs to.
-            quiet_seconds: How long the sender must stay quiet before the flush.
+            quiet_seconds: How long the sender must stay quiet before the flush;
+                None waits for ``request_flush`` instead.
             max_wait_seconds: Flush at the latest this long after the first voice.
         """
         now = time.monotonic()
@@ -107,12 +112,33 @@ class DebounceCollector[T]:
         else:
             self._recording_seen_at.pop(key, None)
 
+    def request_flush(self, key: SenderKey) -> bool:
+        """Send a sender's batch as soon as its pending transcriptions are done.
+
+        Args:
+            key: The sender whose batch should be sent.
+
+        Returns:
+            True if the sender had an open batch.
+        """
+        batch = self._batches.get(key)
+        if batch is None:
+            return False
+        batch.flush_requested = True
+        return True
+
+    def request_flush_chat(self, chat_id: int) -> int:
+        """Send every open batch of a chat; return how many there were."""
+        return sum(self.request_flush(key) for key in list(self._batches) if key[0] == chat_id)
+
     def _ready(self, key: SenderKey, batch: _Batch[T], now: float) -> bool:
         """Return whether a batch should be flushed now."""
         if batch.pending:
             return False
-        if now - batch.started_at >= batch.max_wait_seconds:
+        if batch.flush_requested or now - batch.started_at >= batch.max_wait_seconds:
             return True
+        if batch.quiet_seconds is None:
+            return False
         recording_at = self._recording_seen_at.get(key, 0.0)
         if now - recording_at < RECORDING_STATUS_TTL_SECONDS:
             return False

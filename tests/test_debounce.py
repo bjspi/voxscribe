@@ -16,6 +16,7 @@ from src.transcription import (
     _deliver_transcripts,
     _split_for_telegram,
     get_current_config,
+    note_chat_message,
 )
 
 KEY = (100, 7)
@@ -177,3 +178,62 @@ class BatchDeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Absatz 1.\n\nAbsatz 2.", reply)
         first.delete.assert_awaited_once()
         second.delete.assert_awaited_once()
+
+
+class HoldUntilTriggerTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.flushed: list[list[str]] = []
+
+        async def on_flush(items: list[str]) -> None:
+            self.flushed.append(items)
+
+        self.collector: DebounceCollector[str] = DebounceCollector(on_flush)
+        self.enterContext(patch.object(debounce, "POLL_INTERVAL_SECONDS", 0.01))
+
+    async def test_own_voices_wait_for_a_flush_request(self) -> None:
+        self.collector.voice_started(KEY, None, 10)
+        self.collector.voice_finished(KEY, "one")
+        await asyncio.sleep(0.1)
+        self.collector.voice_started(KEY, None, 10)
+        self.collector.voice_finished(KEY, "two")
+        await asyncio.sleep(0.1)
+        self.assertEqual(self.flushed, [])
+        self.assertEqual(self.collector.request_flush_chat(KEY[0]), 1)
+        await asyncio.sleep(0.05)
+        self.assertEqual(self.flushed, [["one", "two"]])
+
+    async def test_flush_request_waits_for_pending_transcription(self) -> None:
+        self.collector.voice_started(KEY, None, 10)
+        self.assertTrue(self.collector.request_flush(KEY))
+        await asyncio.sleep(0.05)
+        self.assertEqual(self.flushed, [])
+        self.collector.voice_finished(KEY, "one")
+        await asyncio.sleep(0.05)
+        self.assertEqual(self.flushed, [["one"]])
+
+    async def test_max_wait_releases_held_voices(self) -> None:
+        self.collector.voice_started(KEY, None, 0.05)
+        self.collector.voice_finished(KEY, "one")
+        await asyncio.sleep(0.15)
+        self.assertEqual(self.flushed, [["one"]])
+
+    def test_flush_request_without_batch_is_a_no_op(self) -> None:
+        self.assertFalse(self.collector.request_flush(KEY))
+        self.assertEqual(self.collector.request_flush_chat(KEY[0]), 0)
+
+
+class ChatMessageTriggerTests(unittest.TestCase):
+    def _message(self, outgoing: bool, text: str = "", voice: object = None) -> SimpleNamespace:
+        return SimpleNamespace(outgoing=outgoing, text=text, voice=voice, chat=SimpleNamespace(id=100, title="t"))
+
+    def test_triggers_for_own_text_and_partner_messages_only(self) -> None:
+        client = SimpleNamespace(me=SimpleNamespace(id=7))
+        with patch("src.transcription._collector") as collector, patch("src.transcription.logger"):
+            collector.request_flush.return_value = False
+            note_chat_message(client, self._message(True, "ok"))
+            note_chat_message(client, self._message(False, voice=object()))
+            note_chat_message(client, self._message(True, voice=object()))
+            note_chat_message(client, self._message(True, "❌ Transcription failed"))
+            note_chat_message(client, self._message(True, "🔇 No speech recognized."))
+        self.assertEqual(collector.request_flush.call_count, 2)
+        collector.request_flush.assert_called_with((100, 7))

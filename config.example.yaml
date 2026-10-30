@@ -91,15 +91,17 @@ models:
     rephrase: "openai/gpt-oss-120b"
 
 # Debounce + collect (per chat: /debounce on|off or the control bot; default off).
-# Each voice is transcribed at once, but the rephrased reply waits while the
-# same sender keeps sending or recording voices; then all of them are rephrased
-# together into one reply. Telegram does not report your own recording status,
-# so your own voices only wait for the quiet window.
+# Each voice is transcribed at once, but the reply waits while the same sender
+# keeps sending or recording voices; then all of them become one reply
+# (rephrased together when rephrasing is on).
+# Telegram never reports your own recording status, so your own voices have no
+# quiet window: they are sent with your next non-voice message, the next
+# message from someone else in the chat, /go, or after max_wait_seconds.
 debounce:
-  # Send once the sender has neither sent nor recorded a voice for this long.
+  # Other senders: send once they have neither sent nor recorded a voice for this long.
   quiet_seconds: 8
-  # Send at the latest this long after the first collected voice.
-  max_wait_seconds: 600
+  # Everyone: send at the latest this long after the first collected voice.
+  max_wait_seconds: 300
 
 # System prompts
 #

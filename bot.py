@@ -15,6 +15,7 @@ from pyrogram.types import Message
 from src.control_bot.service import configure_bot_commands, create_control_bot
 from src.handlers import (
     handle_voice,
+    send_collected_now,
     set_global_transcription_mode,
     set_prompt,
     set_prompt_in,
@@ -32,7 +33,7 @@ from src.handlers import (
 )
 from src.helpers import get_bot_config_value
 from src.logging import LOGS_DIR, get_logger
-from src.transcription import note_recording_update
+from src.transcription import note_chat_message, note_recording_update
 
 logger = get_logger(__name__)
 
@@ -269,6 +270,12 @@ async def markdown_handler(client: Client, message: Message) -> None:
     await toggle_markdown_output(client, message)
 
 
+@app.on_message(filters.command("go") & _CMD_BASE)
+async def go_handler(client: Client, message: Message) -> None:
+    """Handle ``/go``: send the voices collected in this chat right away."""
+    await send_collected_now(client, message)
+
+
 @app.on_message(filters.command("debounce") & _CMD_BASE)
 async def debounce_handler(client: Client, message: Message) -> None:
     """Handle ``/debounce [on|off]``: collect a sender's voices before rephrasing."""
@@ -295,6 +302,13 @@ async def voice_handler(client: Client, message: Message) -> None:
 async def recording_status_handler(client: Client, update: object, users: object, chats: object) -> None:
     """Track "recording voice" status for the per-chat rephrasing debounce."""
     note_recording_update(update)
+
+
+# Own group as well, so every message is seen next to the command/voice handlers.
+@app.on_message(~filters.scheduled, group=2)
+async def chat_activity_handler(client: Client, message: Message) -> None:
+    """Send your held voices once anything else is posted in the chat."""
+    note_chat_message(client, message)
 
 
 def _is_pyrogram_shutdown_error(exc: OSError) -> bool:

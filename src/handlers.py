@@ -18,7 +18,7 @@ from src.helpers import (
 )
 from src.logging import get_logger
 from src.prompts import MIN_PROMPT_LENGTH, resolve_rephrase_prompt
-from src.transcription import transcribe_voice
+from src.transcription import flush_chat_now, transcribe_voice
 
 logger = get_logger(__name__)
 
@@ -115,7 +115,8 @@ Available Commands:
 /tin         Toggle transcription for incoming voices.
 /tout        Toggle transcription for outgoing voices.
 /rephrase    Toggle rephrasing of transcriptions.
-/debounce [on|off] Collect a sender's consecutive voices, rephrase together.
+/debounce [on|off] Collect a sender's consecutive voices into one reply.
+/go          Send the collected voices of this chat now.
 /tmd [on|off] Markdown file: original + rephrased (default off).
 /delin       Toggle deletion of incoming voices.
 /delout      Toggle deletion of outgoing voices.
@@ -445,6 +446,14 @@ async def toggle_markdown_output(client: Client, message: Message) -> None:
     await send_and_delete_message(client, message, f"<pre>Markdown output {status} for this chat.{detail}</pre>", 5)
 
 
+async def send_collected_now(client: Client, message: Message) -> None:
+    """Handle ``/go``: send the voices collected in this chat right away."""
+    count = flush_chat_now(message.chat.id)
+    logger.info("/go in %s: %s collected batch(es) released", get_chat_info(message.chat), count)
+    text = "Sending the collected voices." if count else "No collected voices to send."
+    await send_and_delete_message(client, message, f"<pre>{text}</pre>", 1.8)
+
+
 async def toggle_debounce(client: Client, message: Message) -> None:
     """Toggle debounce + collect for rephrasing in this chat, or explicitly set on/off."""
     argument = _command_argument(message).strip().lower()
@@ -462,8 +471,9 @@ async def toggle_debounce(client: Client, message: Message) -> None:
 
     status = "enabled" if enabled else "disabled"
     detail = (
-        " Voices are transcribed at once; the rephrased reply waits until the sender"
-        " stops sending/recording voices and then covers all of them."
+        " Voices are transcribed at once; the reply waits until the sender stops"
+        " sending/recording voices and then covers all of them. Your own voices are"
+        " sent with your next non-voice message, the partner's next message or /go."
         if enabled
         else " Every voice gets its own reply."
     )

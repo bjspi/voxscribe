@@ -263,11 +263,15 @@ api:
 
 People often send several voices in a row. With `/debounce on` (or the control
 bot's *Collect follow-up voices* button) every voice is still transcribed right
-away, but the rephrased reply waits while the same sender keeps sending or
-recording voices. Once they have been quiet for `debounce.quiet_seconds`, all
-their voices are rephrased together into one reply to the last voice. Off by
-default; set per chat. Telegram does not report your own recording status, so
-your own voices only wait for the quiet window.
+away, but the reply waits while the same sender keeps sending or recording
+voices. Once they have been quiet for `debounce.quiet_seconds`, all their voices
+become one reply to the last voice, rephrased together when rephrasing is on.
+Off by default; set per chat.
+
+Telegram never reports your own recording status, so your own voices are held
+until you post anything that is not a voice (text, sticker, a command), someone
+else writes in the chat, or you send `/go`. After `debounce.max_wait_seconds`
+(default 5 minutes) a batch is sent in any case.
 
 ### 🔑 Getting your keys
 
@@ -338,7 +342,8 @@ them invisible to your partner.
 | `/tin` | Toggle transcription of **incoming** voices |
 | `/tout` | Toggle transcription of **outgoing** voices |
 | `/rephrase` | Toggle AI rephrasing of transcriptions |
-| `/debounce [on\|off]` | Collect a sender's consecutive voices and rephrase them together (default: off) |
+| `/debounce [on\|off]` | Collect a sender's consecutive voices into one reply (default: off) |
+| `/go` | Send the voices collected in this chat right away |
 | `/tmd [on\|off]` | Toggle Markdown attachments for this chat, or explicitly enable/disable them (default: off) |
 | `/delin` | Toggle deletion of **incoming** voices after transcription |
 | `/delout` | Toggle deletion of **outgoing** voices after transcription |

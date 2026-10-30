@@ -31,6 +31,9 @@ logger = get_logger(__name__)
 # characters (privacy + smaller log files).
 LOG_PREVIEW_CHARS = 200
 
+# The bot's own replies start with these; they are no reason to send held voices.
+BOT_REPLY_PREFIXES = ("📝", "❌", "🔇", "⚠️")
+
 # Inline replies are split into parts of at most this many characters, which
 # leaves room for the reference, HTML escaping and blockquote tags.
 INLINE_CHUNK_CHARS = 3000
@@ -748,8 +751,8 @@ def get_current_config() -> RuntimeConfig:
             default=8,
         ),
         "debounce_max_wait_seconds": _coerce_positive_int(
-            get_config_value(config, ["debounce", "max_wait_seconds"], default=600),
-            default=600,
+            get_config_value(config, ["debounce", "max_wait_seconds"], default=300),
+            default=300,
         ),
     }
 
@@ -979,6 +982,28 @@ async def _deliver_transcripts(transcripts: list[VoiceTranscript]) -> None:
 _collector: DebounceCollector[VoiceTranscript] = DebounceCollector(_deliver_transcripts)
 
 
+def note_chat_message(client: Client, message: Message) -> None:
+    """Send your held voices once anything else happens in the chat.
+
+    Your own non-voice message (text, sticker, command, ...) or any message
+    from someone else ends your current batch of voices in that chat.
+
+    Args:
+        client: The userbot client (for your own user id).
+        message: Any new message.
+    """
+    if message.outgoing and (message.voice or (message.text or "").startswith(BOT_REPLY_PREFIXES)):
+        return
+    me = getattr(client, "me", None)
+    if me is not None and _collector.request_flush((message.chat.id, me.id)):
+        logger.info(f"Sending held voices in {get_chat_info(message.chat)}: new message in the chat")
+
+
+def flush_chat_now(chat_id: int) -> int:
+    """Send every held batch of a chat at once; return how many there were (for /go)."""
+    return _collector.request_flush_chat(chat_id)
+
+
 def note_recording_update(update: object) -> None:
     """Feed a raw Telegram update into the debounce collector.
 
@@ -1019,15 +1044,13 @@ async def transcribe_voice(client: Client, message: Message) -> None:
     # Load current configuration dynamically for each transcription
     current_config = get_current_config()
     chat_config = get_chat_config(str(message.chat.id))
-    # Debouncing only delays rephrased output; plain transcripts are sent at once.
-    debounce = bool(chat_config.get("rephrase_debounce", 0)) and bool(
-        chat_config.get("markdown_output", 0) or chat_config.get("rephrasing", 1)
-    )
+    debounce = bool(chat_config.get("rephrase_debounce", 0))
     key = _sender_key(message)
     if debounce:
-        _collector.voice_started(
-            key, current_config["debounce_quiet_seconds"], current_config["debounce_max_wait_seconds"]
-        )
+        # Telegram never reports your own recording status, so your own voices
+        # wait for the next non-voice message, the partner or /go instead.
+        quiet = None if message.outgoing else current_config["debounce_quiet_seconds"]
+        _collector.voice_started(key, quiet, current_config["debounce_max_wait_seconds"])
 
     groq_client, openai_client = _build_clients(current_config)
     transcript = await _transcribe_message(message, current_config, groq_client, openai_client)
