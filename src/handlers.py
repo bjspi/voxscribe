@@ -9,6 +9,7 @@ from pyrogram.types import Message
 
 from src.helpers import (
     ChatConfig,
+    debounce_scope,
     ensure_chat_config,
     get_bot_config_value,
     get_chat_config,
@@ -21,6 +22,21 @@ from src.prompts import MIN_PROMPT_LENGTH, resolve_rephrase_prompt
 from src.transcription import flush_chat_now, transcribe_voice
 
 logger = get_logger(__name__)
+
+# /vox value and /debounce reply per collect setting (see helpers.debounce_scope).
+_DEBOUNCE_STATUS = {"off": "❌ off", "in": "✅ incoming", "both": "✅ both"}
+_DEBOUNCE_REPLIES = {
+    "off": "Debounce + collect disabled. Every voice gets its own reply.",
+    "in": (
+        "Debounce + collect enabled for incoming voices only. The reply waits until"
+        " the sender stops sending/recording voices and then covers all of them."
+    ),
+    "both": (
+        "Debounce + collect enabled for both directions. Incoming voices wait until"
+        " the sender stops sending/recording; your own voices are sent with your"
+        " next non-voice message, the partner's next message or /go."
+    ),
+}
 
 # ==== COMMAND HANDLERS ====
 
@@ -115,7 +131,8 @@ Available Commands:
 /tin         Toggle transcription for incoming voices.
 /tout        Toggle transcription for outgoing voices.
 /rephrase    Toggle rephrasing of transcriptions.
-/debounce [on|off] Collect a sender's consecutive voices into one reply.
+/debounce [on|off|in|both] Collect a sender's consecutive voices into one reply
+             (in = incoming voices only, both = your own too).
 /go          Send the collected voices of this chat now.
 /tmd [on|off] Markdown file: original + rephrased (default off).
 /delin       Toggle deletion of incoming voices.
@@ -177,7 +194,7 @@ def build_chat_config_text(chat_id: str, chat_config: ChatConfig, default_prompt
         ("  Outgoing", icon(chat_config.get("transcription_out", 1)), "/tout"),
         ("Output", "📄 Markdown file" if markdown else "💬 inline text", "/tmd on|off"),
         ("Rephrasing", icon(chat_config.get("rephrasing", 1)), "/rephrase"),
-        ("  Collect", icon(chat_config.get("rephrase_debounce", 0)), "/debounce on|off"),
+        ("  Collect", _DEBOUNCE_STATUS[debounce_scope(chat_config)], "/debounce off|in|both"),
         ("Delete voice", "", ""),
         ("  Incoming", icon(chat_config.get("delete_incoming_voice", 0)), "/delin"),
         ("  Outgoing", icon(chat_config.get("delete_outgoing_voice", 0)), "/delout"),
@@ -455,30 +472,31 @@ async def send_collected_now(client: Client, message: Message) -> None:
 
 
 async def toggle_debounce(client: Client, message: Message) -> None:
-    """Toggle debounce + collect for rephrasing in this chat, or explicitly set on/off."""
+    """Toggle debounce + collect for rephrasing in this chat, or set it explicitly.
+
+    ``on`` keeps the chosen direction, ``in`` collects incoming voices only and
+    ``both`` collects your own voices too.
+    """
     argument = _command_argument(message).strip().lower()
-    if argument not in {"", "on", "off"}:
-        await send_and_delete_message(client, message, "<pre>Usage: /debounce [on|off]</pre>", 5)
+    if argument not in {"", "on", "off", "in", "both"}:
+        await send_and_delete_message(client, message, "<pre>Usage: /debounce [on|off|in|both]</pre>", 5)
         return
 
     chat_id = _chat_id(message)
     config = _ensure_chat_settings(message)
-    enabled = argument == "on" if argument else not config[chat_id].get("rephrase_debounce", 0)
-    config[chat_id]["rephrase_debounce"] = int(enabled)
+    chat_settings = config[chat_id]
+    enabled = argument != "off" if argument else not chat_settings.get("rephrase_debounce", 0)
+    chat_settings["rephrase_debounce"] = int(enabled)
+    if argument in ("in", "both"):
+        chat_settings["rephrase_debounce_out"] = int(argument == "both")
     if not save_chat_settings(config):
         await send_and_delete_message(client, message, "<pre>Could not save the debounce setting.</pre>", 5)
         return
 
-    status = "enabled" if enabled else "disabled"
-    detail = (
-        " Voices are transcribed at once; the reply waits until the sender stops"
-        " sending/recording voices and then covers all of them. Your own voices are"
-        " sent with your next non-voice message, the partner's next message or /go."
-        if enabled
-        else " Every voice gets its own reply."
-    )
-    logger.info("Rephrasing debounce %s in %s", status, get_chat_info(message.chat))
-    await send_and_delete_message(client, message, f"<pre>Debounce + collect {status}.{detail}</pre>", 5)
+    scope = debounce_scope(chat_settings)
+    text = _DEBOUNCE_REPLIES[scope]
+    logger.info("Rephrasing debounce set to %s in %s", scope, get_chat_info(message.chat))
+    await send_and_delete_message(client, message, f"<pre>{text}</pre>", 5)
 
 
 async def toggle_voice_delete(client: Client, message: Message) -> None:

@@ -90,7 +90,8 @@ models:
     transcription: "whisper-large-v3"
     rephrase: "openai/gpt-oss-120b"
 
-# Debounce + collect (per chat: /debounce on|off or the control bot; default off).
+# Debounce + collect (per chat: /debounce on|off|in|both or the control bot; default off;
+# "on" collects incoming voices only, "both" your own voices too).
 # Each voice is transcribed at once, but the reply waits while the same sender
 # keeps sending or recording voices; then all of them become one reply
 # (rephrased together when rephrasing is on).

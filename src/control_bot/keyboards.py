@@ -14,7 +14,8 @@ two letters because template keys (up to 24 characters) ride along.
 - ``tdir|<cid>|<in|out|both>``   — set the transcription direction (/tin, /tout)
 - ``tmd|<cid>|<0|1>``            — output: 0 = inline text, 1 = Markdown file (/tmd)
 - ``rephrase|<cid>``             — toggle AI rephrasing (/rephrase)
-- ``deb|<cid>``                  — toggle debounce + collect (/debounce)
+- ``deb|<cid>``                  — collect screen: off / incoming only / both (/debounce)
+- ``debset|<cid>|<off|in|both>`` — set which voices are collected (/debounce off|in|both)
 - ``del|<cid>|<in|out>``         — toggle deleting the voice afterwards (/delin, /delout)
 - ``prompts|<cid>``              — the chat's prompt screen (/prompts)
 - ``pp|<cid>|<in|out|both>``     — prompt picker for one direction (or both)
@@ -35,7 +36,8 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from src.control_bot.chats import ChatRef
 from src.control_bot.common import (
     chat_label,
-    debounce_on,
+    debounce_label,
+    debounce_scope,
     direction_of,
     is_enabled,
     rephrasing_on,
@@ -135,7 +137,7 @@ def chat_detail_keyboard(chat_id: str, chat_config: ChatConfig, back_page: int =
         ],
         [_btn("— Rephrasing —", "nop")],
         [_btn(_mark(rephrasing_on(chat_config), "🧠 AI rephrasing"), f"rephrase|{cid}")],
-        [_btn(_mark(debounce_on(chat_config), "⏳ Collect follow-up voices"), f"deb|{cid}")],
+        [_btn(f"⏳ Collect follow-up voices: {debounce_label(chat_config)}", f"deb|{cid}")],
         [_btn("— Delete voice after transcription —", "nop")],
         [
             _btn(_mark(delete_in, "🗑 Incoming"), f"del|{cid}|in"),
@@ -146,6 +148,20 @@ def chat_detail_keyboard(chat_id: str, chat_config: ChatConfig, back_page: int =
         [_btn("⬅️ Back", f"cl|{back_page}")],
     ]
     return InlineKeyboardMarkup(rows)
+
+
+def debounce_keyboard(chat_id: str, chat_config: ChatConfig) -> InlineKeyboardMarkup:
+    """Build the collect screen: off, incoming voices only, or both directions."""
+    cid = chat_id
+    scope = debounce_scope(chat_config)
+    return InlineKeyboardMarkup(
+        [
+            [_btn(_mark(scope == "off", "Off"), f"debset|{cid}|off")],
+            [_btn(_mark(scope == "in", "📥 Incoming only"), f"debset|{cid}|in")],
+            [_btn(_mark(scope == "both", "🔁 Both directions"), f"debset|{cid}|both")],
+            [_btn("⬅️ Back", f"c|{cid}")],
+        ]
+    )
 
 
 def prompts_keyboard(chat_id: str, prompt_in: ResolvedPrompt, prompt_out: ResolvedPrompt) -> InlineKeyboardMarkup:

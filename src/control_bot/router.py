@@ -23,6 +23,7 @@ from src.control_bot.keyboards import (
     chat_detail_keyboard,
     chats_keyboard,
     confirm_keyboard,
+    debounce_keyboard,
     main_menu_keyboard,
     overview_keyboard,
     prompt_picker_keyboard,
@@ -40,6 +41,7 @@ from src.control_bot.views import (
     render_chat_detail_text,
     render_chats_text,
     render_custom_prompt_text,
+    render_debounce_text,
     render_delete_chat_text,
     render_overview_text,
     render_prompt_picker_text,
@@ -161,6 +163,12 @@ class ControlRouter:
             render_chat_detail_text(chat_id, chat_config, prompts.incoming, prompts.outgoing),
             chat_detail_keyboard(chat_id, chat_config),
         )
+
+    def debounce_screen(self, chat_id: str) -> Screen | None:
+        chat_config = self._stored_chat(chat_id)
+        if chat_config is None:
+            return None
+        return render_debounce_text(chat_id, chat_config), debounce_keyboard(chat_id, chat_config)
 
     def prompts_screen(self, chat_id: str) -> Screen | None:
         chat_config = self._stored_chat(chat_id)
@@ -299,6 +307,7 @@ class ControlRouter:
             "tmd": self._cb_output,
             "rephrase": self._cb_rephrasing,
             "deb": self._cb_debounce,
+            "debset": self._cb_debounce_set,
             "del": self._cb_delete_voice,
             "prompts": self._cb_prompts,
             "pp": self._cb_prompt_picker,
@@ -363,10 +372,15 @@ class ControlRouter:
         return await self.chat_detail(chat_id) or self.chats_screen()
 
     async def _cb_debounce(self, _: int, args: list[str]) -> Screen:
-        chat_id = args[0]
-        chat_config = self._stored_chat(chat_id)
-        if chat_config is not None:
-            self._apply(chat_id, {"rephrase_debounce": 0 if chat_config.get("rephrase_debounce", 0) else 1})
+        return self.debounce_screen(args[0]) or self.chats_screen()
+
+    async def _cb_debounce_set(self, _: int, args: list[str]) -> Screen:
+        chat_id, scope = args[0], args[1]
+        if scope in ("off", "in", "both"):
+            self._apply(
+                chat_id,
+                {"rephrase_debounce": int(scope != "off"), "rephrase_debounce_out": int(scope == "both")},
+            )
         return await self.chat_detail(chat_id) or self.chats_screen()
 
     async def _cb_delete_voice(self, _: int, args: list[str]) -> Screen:

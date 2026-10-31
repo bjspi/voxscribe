@@ -5,12 +5,13 @@ import unittest
 from contextlib import ExitStack
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from pyrogram import raw
 
 from src import debounce
 from src.debounce import DebounceCollector, recording_status_from_update
+from src.helpers import debounce_scope
 from src.transcription import (
     VoiceTranscript,
     _deliver_transcripts,
@@ -241,21 +242,42 @@ class ChatMessageTriggerTests(unittest.TestCase):
 
 
 class MaxWaitSelectionTests(unittest.IsolatedAsyncioTestCase):
-    async def test_own_and_other_voices_use_their_own_limits(self) -> None:
+    async def _transcribe(self, outgoing: bool, chat_config: dict[str, int]) -> MagicMock:
+        """Run transcribe_voice for one voice and return the mocked collector."""
         config = {"debounce": {"quiet_seconds": 4, "max_wait_seconds": 60, "own_max_wait_seconds": 900}}
         with patch("src.transcription.load_bot_config", return_value=config):
             runtime = get_current_config()
+        message = SimpleNamespace(
+            outgoing=outgoing,
+            chat=SimpleNamespace(id=1, first_name="x"),
+            from_user=SimpleNamespace(id=7),
+        )
+        with ExitStack() as stack:
+            stack.enter_context(patch("src.transcription.get_current_config", return_value=runtime))
+            stack.enter_context(patch("src.transcription.get_chat_config", return_value=chat_config))
+            stack.enter_context(patch("src.transcription.logger"))
+            stack.enter_context(patch("src.transcription._transcribe_message", new=AsyncMock(return_value=None)))
+            collector = stack.enter_context(patch("src.transcription._collector"))
+            await transcribe_voice(None, message)
+        return collector
+
+    async def test_own_and_other_voices_use_their_own_limits(self) -> None:
+        both = {"rephrase_debounce": 1, "rephrase_debounce_out": 1}
         for outgoing, expected in ((True, (None, 900)), (False, (4, 60))):
-            message = SimpleNamespace(
-                outgoing=outgoing,
-                chat=SimpleNamespace(id=1, first_name="x"),
-                from_user=SimpleNamespace(id=7),
-            )
-            with ExitStack() as stack:
-                stack.enter_context(patch("src.transcription.get_current_config", return_value=runtime))
-                stack.enter_context(patch("src.transcription.get_chat_config", return_value={"rephrase_debounce": 1}))
-                stack.enter_context(patch("src.transcription.logger"))
-                stack.enter_context(patch("src.transcription._transcribe_message", new=AsyncMock(return_value=None)))
-                collector = stack.enter_context(patch("src.transcription._collector"))
-                await transcribe_voice(None, message)
+            collector = await self._transcribe(outgoing, both)
             collector.voice_started.assert_called_once_with((1, 7), *expected)
+
+    async def test_incoming_only_leaves_own_voices_alone(self) -> None:
+        incoming_only = {"rephrase_debounce": 1}
+        collector = await self._transcribe(True, incoming_only)
+        collector.voice_started.assert_not_called()
+        collector = await self._transcribe(False, incoming_only)
+        collector.voice_started.assert_called_once_with((1, 7), 4, 60)
+
+
+class DebounceScopeTests(unittest.TestCase):
+    def test_on_means_incoming_only_unless_own_voices_are_enabled(self) -> None:
+        self.assertEqual(debounce_scope({}), "off")
+        self.assertEqual(debounce_scope({"rephrase_debounce_out": 1}), "off")
+        self.assertEqual(debounce_scope({"rephrase_debounce": 1}), "in")
+        self.assertEqual(debounce_scope({"rephrase_debounce": 1, "rephrase_debounce_out": 1}), "both")

@@ -20,7 +20,15 @@ from pyrogram import Client
 from pyrogram.types import Message
 
 from src.debounce import DebounceCollector, SenderKey, recording_status_from_update
-from src.helpers import ChatConfig, YamlConfig, get_chat_config, get_chat_info, get_config_value, load_bot_config
+from src.helpers import (
+    ChatConfig,
+    YamlConfig,
+    debounce_scope,
+    get_chat_config,
+    get_chat_info,
+    get_config_value,
+    load_bot_config,
+)
 from src.logging import get_logger
 from src.prompts import resolve_rephrase_prompt
 from src.quality import (
@@ -1135,8 +1143,8 @@ async def transcribe_voice(client: Client, message: Message) -> None:
 
     This function handles the complete workflow of voice message processing:
     1. Downloads the voice message and transcribes it with the configured API
-    2. With debouncing on, holds the transcript until the sender stops sending
-       voices, then rephrases all collected transcripts together
+    2. With debouncing on (for this direction), holds the transcript until the
+       sender stops sending voices, then rephrases all collected transcripts together
     3. Otherwise rephrases (if enabled) and replies right away
     4. Optionally deletes the original voice message(s)
 
@@ -1155,7 +1163,8 @@ async def transcribe_voice(client: Client, message: Message) -> None:
     # Load current configuration dynamically for each transcription
     current_config = get_current_config()
     chat_config = get_chat_config(str(message.chat.id))
-    debounce = bool(chat_config.get("rephrase_debounce", 0))
+    scope = debounce_scope(chat_config)
+    debounce = scope == "both" or (scope == "in" and not message.outgoing)
     key = _sender_key(message)
     if debounce:
         # Telegram never reports your own recording status, so your own voices

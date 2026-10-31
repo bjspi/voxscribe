@@ -11,6 +11,7 @@ from html import escape
 from src.control_bot.common import (
     DIRECTION_LABELS,
     chat_label,
+    debounce_label,
     debounce_on,
     direction_of,
     fit_message,
@@ -153,11 +154,26 @@ def render_chat_detail_text(
         f"<b>Direction:</b> {_direction_word(direction_of(chat_config))}\n"
         f"<b>Output:</b> {output}\n"
         f"<b>Rephrasing:</b> {rephrasing}\n"
-        f"<b>Collect follow-up voices:</b> {_yes_no(debounce_on(chat_config))}\n"
+        f"<b>Collect follow-up voices:</b> {debounce_label(chat_config)}\n"
         f"<b>Delete voice:</b> incoming {_yes_no(chat_config.get('delete_incoming_voice'))} · "
         f"outgoing {_yes_no(chat_config.get('delete_outgoing_voice'))}\n"
         f"<b>Prompt in:</b> {escape(prompt_in.label)}\n"
         f"<b>Prompt out:</b> {escape(prompt_out.label)}"
+    )
+
+
+def render_debounce_text(chat_id: str, chat_config: ChatConfig) -> str:
+    """Build the collect screen explaining incoming-only versus both directions."""
+    return (
+        f"{_heading(chat_id, chat_config, '⏳')}\n\n"
+        f"<b>Collect follow-up voices:</b> {debounce_label(chat_config)}\n\n"
+        "Voices are transcribed at once; the reply waits while the sender keeps "
+        "sending or recording voices and then covers all of them.\n\n"
+        "📥 <b>Incoming only</b> — just the other side's voices. Telegram reports "
+        "when they are recording, so the reply follows as soon as they stop.\n"
+        "🔁 <b>Both directions</b> — your own voices too. Telegram never reports your "
+        "own recording, so they wait for your next non-voice message, the partner's "
+        "next message or /go."
     )
 
 

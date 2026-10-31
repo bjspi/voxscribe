@@ -49,6 +49,7 @@ CONFIG_DEFAULTS: ChatConfig = {
     "rephrasing": 1,  # Rephrase transcriptions for better readability
     "markdown_output": 0,  # Send original + rephrased text in one Markdown file
     "rephrase_debounce": 0,  # Collect a sender's consecutive voices and rephrase them together
+    "rephrase_debounce_out": 0,  # Also collect your own voices (0 = incoming voices only)
     "delete_outgoing_voice": 0,  # Delete outgoing voice messages after transcription
     "delete_incoming_voice": 0,  # Delete incoming voice messages after transcription
     "rephrase_prompt_in": "",  # Custom rephrasing prompt for incoming messages (empty = use default)
@@ -81,6 +82,17 @@ def _as_bool(value: object, default: bool) -> bool:
         if normalized in {"0", "false", "no", "n", "off"}:
             return False
     return default
+
+
+def debounce_scope(chat_config: ChatConfig) -> str:
+    """Return which voices are collected before rephrasing: ``off``, ``in`` or ``both``.
+
+    Your own voices are only collected on request: Telegram never reports your
+    own recording status, so they can only wait for the next message or ``/go``.
+    """
+    if not chat_config.get("rephrase_debounce", 0):
+        return "off"
+    return "both" if chat_config.get("rephrase_debounce_out", 0) else "in"
 
 
 def new_chat_transcription_default(chat_id: str) -> int:

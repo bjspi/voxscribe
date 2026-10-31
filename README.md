@@ -268,7 +268,12 @@ voices. Once they have been quiet for `debounce.quiet_seconds`, all their voices
 become one reply to the last voice, rephrased together when rephrasing is on.
 Off by default; set per chat.
 
-Telegram never reports your own recording status, so your own voices are held
+`/debounce on` collects **incoming voices only**: Telegram reports when the other
+side is recording, so their reply follows as soon as they stop. `/debounce both`
+(or *Both directions* in the control bot's collect menu) collects your own voices
+too, `/debounce in` switches back to incoming only.
+
+Telegram never reports your own recording status, so with *both directions* your own voices are held
 until you post anything that is not a voice (text, sticker, a command), someone
 else writes in the chat, or you send `/go`. After `debounce.own_max_wait_seconds`
 (default 5 minutes) they are sent in any case; `debounce.max_wait_seconds` is the
@@ -364,7 +369,7 @@ them invisible to your partner.
 | `/tin` | Toggle transcription of **incoming** voices |
 | `/tout` | Toggle transcription of **outgoing** voices |
 | `/rephrase` | Toggle AI rephrasing of transcriptions |
-| `/debounce [on\|off]` | Collect a sender's consecutive voices into one reply (default: off) |
+| `/debounce [on\|off\|in\|both]` | Collect a sender's consecutive voices into one reply (default: off; `on` = incoming only, `both` = your own voices too) |
 | `/go` | Send the voices collected in this chat right away |
 | `/tmd [on\|off]` | Toggle Markdown attachments for this chat, or explicitly enable/disable them (default: off) |
 | `/delin` | Toggle deletion of **incoming** voices after transcription |
@@ -416,7 +421,7 @@ Transcription ✅ on             /ton · /toff
   Outgoing    ✅ on             /tout
 Output        💬 inline text    /tmd on|off
 Rephrasing    ✅ on             /rephrase
-  Collect     ❌ off            /debounce on|off
+  Collect     ❌ off            /debounce off|in|both
 Delete voice
   Incoming    ❌ off            /delin
   Outgoing    ❌ off            /delout
@@ -644,6 +649,7 @@ your private chats) and written atomically, with a `.json.backup` kept alongside
         "rephrasing": 0,           // AI rephrasing on/off           (/rephrase)
         "markdown_output": 0,      // one .md: original + rephrased  (/tmd)
         "rephrase_debounce": 0,    // collect follow-up voices        (/debounce)
+        "rephrase_debounce_out": 0,// ...your own voices too           (/debounce both)
         "delete_incoming_voice": 0,// delete incoming after text     (/delin)
         "delete_outgoing_voice": 0,// delete outgoing after text     (/delout)
         "rephrase_prompt": "",     // legacy/global custom prompt

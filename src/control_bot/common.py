@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.helpers import ChatConfig
+from src.helpers import ChatConfig, debounce_scope
 
 # Chats per page in the chat list keyboard.
 PAGE_SIZE = 12
@@ -69,9 +69,21 @@ def rephrasing_on(chat_config: ChatConfig) -> bool:
     return bool(chat_config.get("rephrasing", 1))
 
 
+DEBOUNCE_LABELS: dict[str, str] = {
+    "off": "off",
+    "in": "incoming only",
+    "both": "both directions",
+}
+
+
 def debounce_on(chat_config: ChatConfig) -> bool:
     """Return whether a sender's consecutive voices are collected before rephrasing."""
-    return bool(chat_config.get("rephrase_debounce", 0))
+    return debounce_scope(chat_config) != "off"
+
+
+def debounce_label(chat_config: ChatConfig) -> str:
+    """Return the readable collect setting (off / incoming only / both directions)."""
+    return DEBOUNCE_LABELS[debounce_scope(chat_config)]
 
 
 def state_icon(active: bool) -> str:
