@@ -127,6 +127,22 @@ class MarkdownTranscriptionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(caption.startswith("⚠️ Rephrasing unavailable"))
         self.assertNotIn("📝", caption)
 
+    async def test_rephrase_failure_in_text_mode_notes_it_above_the_first_blockquote_only(self) -> None:
+        self.chat_config.update(markdown_output=0, rephrasing=1)
+        self.runtime["graceful_degradation_enabled"] = True
+        self.rephrase.side_effect = TimeoutError("API request timed out")
+        await transcribe_voice(None, self.message)
+
+        replies = [call.args[0] for call in self.message.reply_text.await_args_list]
+        self.assertGreater(len(replies), 1)
+        header, quote = replies[0].split("<blockquote expandable>", maxsplit=1)
+        self.assertIn("⚠️ Rephrasing unavailable: API request timed out", header)
+        self.assertIn("Sending transcript only.", header)
+        self.assertIn("Original: Grüße &amp; &lt;Text&gt;.", quote)
+        for reply in replies[1:]:
+            self.assertNotIn("Rephrasing unavailable", reply)
+        self.assertIn("Ende.", replies[-1])
+
     async def test_outgoing_voice_uses_sender_prompt_and_deletes_only_after_upload(self) -> None:
         self.message.outgoing = True
         self.message.from_user.username = "my_username"

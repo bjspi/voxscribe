@@ -1045,10 +1045,6 @@ async def _deliver_transcripts(transcripts: list[VoiceTranscript]) -> None:
                         f"Rephrasing skipped in {chat_info}: {rephrase_error_code} ({rephrase_hint})", exc_info=True
                     )
                     rephrase_notice = f"Rephrasing unavailable: {rephrase_hint} ({current_config['rephrase_provider']})."
-                    if not markdown_output:
-                        await message.reply_text(
-                            f"⚠️ Rephrasing skipped: {rephrase_hint} ({current_config['rephrase_provider']})"
-                        )
                 else:
                     raise rephrase_exc
 
@@ -1074,10 +1070,13 @@ async def _deliver_transcripts(transcripts: list[VoiceTranscript]) -> None:
                 len(rephrased_text) if rephrased_text is not None else None,
             )
         else:
+            header_notices = fallback_notice
+            if rephrase_notice:
+                header_notices += f"\n⚠️ {escape(rephrase_notice)} Sending transcript only."
             chunks = _split_for_telegram(text.strip(' "'))
             for i, chunk in enumerate(chunks):
                 part_reference = f" Part {i + 1}/{len(chunks)}" if len(chunks) > 1 else ""
-                first_chunk_notice = fallback_notice if i == 0 else ""
+                first_chunk_notice = header_notices if i == 0 else ""
                 txt = (
                     f"📝 {voice_reference}{part_reference}{first_chunk_notice}\n"
                     f"<blockquote expandable>{escape(chunk)}</blockquote>"
